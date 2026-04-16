@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Slurm GPU Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between">
+    <h1 class="text-xl font-bold">Slurm GPU Dashboard</h1>
+    <div class="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
+      <span id="last-updated">Loading...</span>
+      <span id="countdown" class="tabular-nums w-8 text-right"></span>
+      <button id="refresh-btn" onclick="manualRefresh()" class="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition">Refresh</button>
+    </div>
+  </header>
+
+  <!-- Filters -->
+  <div class="px-6 py-3 flex flex-wrap items-center gap-4 text-sm bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+    <input id="search" type="text" placeholder="Search node name..." class="px-3 py-1.5 border rounded dark:bg-gray-700 dark:border-gray-600 w-56">
+    <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="filter-accessible" checked> Accessible only</label>
+    <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="filter-hide-down"> Hide DOWN nodes</label>
+  </div>
+
+  <main class="px-6 py-6 max-w-7xl mx-auto space-y-8">
+
+    <!-- Summary Strip -->
+    <div id="summary-strip" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="stat-card"><div class="stat-label">Total GPUs</div><div class="stat-value" id="stat-total">-</div></div>
+      <div class="stat-card"><div class="stat-label">Allocated</div><div class="stat-value text-amber-600 dark:text-amber-400" id="stat-allocated">-</div></div>
+      <div class="stat-card"><div class="stat-label">Available</div><div class="stat-value text-green-600 dark:text-green-400" id="stat-available">-</div></div>
+      <div class="stat-card"><div class="stat-label">Down</div><div class="stat-value text-red-600 dark:text-red-400" id="stat-down">-</div></div>
+    </div>
+
+    <!-- GPU Type Cards -->
+    <section>
+      <h2 class="text-lg font-semibold mb-3">GPU Types</h2>
+      <div id="gpu-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </section>
+
+    <!-- Node Table -->
+    <section>
+      <h2 class="text-lg font-semibold mb-3">Node Details</h2>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-100 dark:bg-gray-800 text-left">
+            <tr>
+              <th class="px-4 py-2">Node</th>
+              <th class="px-4 py-2">GPU Type</th>
+              <th class="px-4 py-2">GPUs</th>
+              <th class="px-4 py-2 w-40">GPU Bar</th>
+              <th class="px-4 py-2">Partitions</th>
+              <th class="px-4 py-2">CPU</th>
+              <th class="px-4 py-2 w-40">Memory</th>
+              <th class="px-4 py-2 w-40">GPU Availability</th>
+              <th class="px-4 py-2">State</th>
+            </tr>
+          </thead>
+          <tbody id="node-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
