@@ -1,4 +1,4 @@
-"""FastAPI entry point for the Slurm GPU Dashboard."""
+"""FastAPI entry point for the Slurm Dashboard."""
 
 import os
 
@@ -7,9 +7,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from slurm_parser import get_gpu_status
+from slurm_parser import get_cpu_status, get_gpu_status
 
-app = FastAPI(title="Slurm GPU Dashboard")
+app = FastAPI(title="Slurm Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -22,6 +22,11 @@ async def index(request: Request):
 @app.get("/api/gpu-status")
 async def gpu_status():
     return get_gpu_status()
+
+
+@app.get("/api/cpu-status")
+async def cpu_status():
+    return get_cpu_status()
 
 
 if __name__ == "__main__":

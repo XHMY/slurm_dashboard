@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Slurm GPU Dashboard</title>
+  <title>Slurm Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -11,13 +11,19 @@
 
   <!-- Header -->
   <header class="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between">
-    <h1 class="text-xl font-bold">Slurm GPU Dashboard</h1>
+    <h1 class="text-xl font-bold">Slurm Dashboard</h1>
     <div class="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
       <span id="last-updated">Loading...</span>
       <span id="countdown" class="tabular-nums w-8 text-right"></span>
       <button id="refresh-btn" onclick="manualRefresh()" class="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 transition">Refresh</button>
     </div>
   </header>
+
+  <!-- Tab Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('gpu')" id="tab-gpu">GPU</button>
+    <button class="tab-btn" onclick="switchTab('cpu')" id="tab-cpu">CPU</button>
+  </div>
 
   <!-- Filters -->
   <div class="px-6 py-3 flex flex-wrap items-center gap-4 text-sm bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
@@ -26,9 +32,9 @@
     <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="filter-hide-down"> Hide DOWN nodes</label>
   </div>
 
-  <main class="px-6 py-6 max-w-7xl mx-auto space-y-8">
+  <!-- GPU Tab -->
+  <main id="gpu-tab" class="px-6 py-6 max-w-7xl mx-auto space-y-8">
 
-    <!-- Summary Strip -->
     <div id="summary-strip" class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <div class="stat-card"><div class="stat-label">Total GPUs</div><div class="stat-value" id="stat-total">-</div></div>
       <div class="stat-card"><div class="stat-label">Allocated</div><div class="stat-value text-amber-600 dark:text-amber-400" id="stat-allocated">-</div></div>
@@ -36,13 +42,11 @@
       <div class="stat-card"><div class="stat-label">Down</div><div class="stat-value text-red-600 dark:text-red-400" id="stat-down">-</div></div>
     </div>
 
-    <!-- GPU Type Cards -->
     <section>
       <h2 class="text-lg font-semibold mb-3">GPU Types</h2>
       <div id="gpu-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
     </section>
 
-    <!-- Node Table -->
     <section>
       <h2 class="text-lg font-semibold mb-3">Node Details</h2>
       <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
@@ -61,6 +65,44 @@
             </tr>
           </thead>
           <tbody id="node-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- CPU Tab -->
+  <main id="cpu-tab" class="px-6 py-6 max-w-7xl mx-auto space-y-8 hidden">
+
+    <div id="cpu-summary-strip" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="stat-card"><div class="stat-label">Total CPUs</div><div class="stat-value" id="cpu-stat-total">-</div></div>
+      <div class="stat-card"><div class="stat-label">Allocated</div><div class="stat-value text-amber-600 dark:text-amber-400" id="cpu-stat-allocated">-</div></div>
+      <div class="stat-card"><div class="stat-label">Available</div><div class="stat-value text-green-600 dark:text-green-400" id="cpu-stat-available">-</div></div>
+      <div class="stat-card"><div class="stat-label">Down</div><div class="stat-value text-red-600 dark:text-red-400" id="cpu-stat-down">-</div></div>
+    </div>
+
+    <section>
+      <h2 class="text-lg font-semibold mb-3">CPU Architectures</h2>
+      <div id="cpu-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </section>
+
+    <section>
+      <h2 class="text-lg font-semibold mb-3">Node Details</h2>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-100 dark:bg-gray-800 text-left">
+            <tr>
+              <th class="px-4 py-2">Node</th>
+              <th class="px-4 py-2">CPU Arch</th>
+              <th class="px-4 py-2">CPUs</th>
+              <th class="px-4 py-2 w-40">CPU Bar</th>
+              <th class="px-4 py-2">Partitions</th>
+              <th class="px-4 py-2">Memory</th>
+              <th class="px-4 py-2 w-40">Memory Bar</th>
+              <th class="px-4 py-2">State</th>
+            </tr>
+          </thead>
+          <tbody id="cpu-node-table-body"></tbody>
         </table>
       </div>
     </section>

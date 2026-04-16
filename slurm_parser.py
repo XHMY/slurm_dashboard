@@ -1,4 +1,4 @@
-"""Parse scontrol -a show nodes output into structured GPU availability data."""
+"""Parse scontrol -a show nodes output into structured GPU/CPU availability data."""
 
 import json
 import re
@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 _cache: dict[str, Any] = {"data": None, "timestamp": 0}
+_cpu_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 CACHE_TTL = 30  # seconds
 
 ACCESSIBLE_PARTITIONS = {"dgxh", "hw-grp", "preempt"}
@@ -14,6 +15,11 @@ ACCESSIBLE_PARTITIONS = {"dgxh", "hw-grp", "preempt"}
 GPU_PRIORITY = [
     "h200", "h100-40g", "h100", "l40s", "a40", "v100",
     "rtx8000", "rtx6000", "rtx2080", "gtx1080", "gtx980", "m60", "t4",
+]
+
+CPU_PRIORITY = [
+    "sapphire", "epyc-el9", "epyc", "cascadelake", "skylake",
+    "broadwell", "haswell", "ivybridge", "sandybridge",
 ]
 
 DOWN_STATES = {"DOWN", "DRAINED", "NOT_RESPONDING", "FAIL", "FUTURE", "POWERING_DOWN", "POWERED_DOWN"}
@@ -117,6 +123,29 @@ def _detect_gpu_type(features: str) -> str:
     for gpu in GPU_PRIORITY:
         if gpu in tokens:
             return gpu
+    return "unknown"
+
+
+def _detect_cpu_type(features: str) -> str:
+    tokens = set(features.lower().split(","))
+    if "sapphire" in tokens:
+        return "sapphire"
+    if "epyc" in tokens:
+        if "el9" in tokens:
+            return "epyc-el9"
+        return "epyc"
+    if "cascadelake" in tokens:
+        return "cascadelake"
+    if "skylake" in tokens:
+        return "skylake"
+    if "broadwell" in tokens:
+        return "broadwell"
+    if "haswell" in tokens:
+        return "haswell"
+    if "ivybridge" in tokens:
+        return "ivybridge"
+    if "sandybridge" in tokens:
+        return "sandybridge"
     return "unknown"
 
 
@@ -274,6 +303,128 @@ def get_gpu_status() -> dict:
     data = _build_summary(nodes)
     _cache["data"] = data
     _cache["timestamp"] = now
+    return data
+
+
+def _parse_cpu_nodes(raw: str) -> list[dict]:
+    blocks = re.split(r"\n\s*\n", raw.strip())
+    nodes = []
+    for block in blocks:
+        if not block.strip():
+            continue
+        name = _parse_field(block, "NodeName")
+        if not name:
+            continue
+
+        features = _parse_field(block, "ActiveFeatures") or _parse_field(block, "AvailableFeatures")
+        partitions_raw = _parse_field(block, "Partitions")
+        raw_state = _parse_field(block, "State")
+        cpu_tot = int(_parse_field(block, "CPUTot") or 0)
+        cpu_alloc = int(_parse_field(block, "CPUAlloc") or 0)
+        real_memory = int(_parse_field(block, "RealMemory") or 0)
+        alloc_mem = int(_parse_field(block, "AllocMem") or 0)
+
+        if cpu_tot == 0:
+            continue
+
+        cpu_type = _detect_cpu_type(features)
+        state = _classify_state(raw_state)
+        partitions = set(partitions_raw.split(",")) if partitions_raw else set()
+        accessible = bool(partitions & ACCESSIBLE_PARTITIONS)
+
+        if state in ("down", "drain"):
+            cpu_down = cpu_tot
+            cpu_available = 0
+            cpu_allocated = 0
+            mem_down = real_memory
+            mem_available = 0
+            mem_allocated = 0
+        else:
+            cpu_down = 0
+            cpu_allocated = cpu_alloc
+            cpu_available = cpu_tot - cpu_alloc
+            mem_down = 0
+            mem_allocated = alloc_mem
+            mem_available = real_memory - alloc_mem
+
+        nodes.append({
+            "name": name,
+            "cpu_type": cpu_type,
+            "cpu_total": cpu_tot,
+            "cpu_allocated": cpu_allocated,
+            "cpu_available": cpu_available,
+            "cpu_down": cpu_down,
+            "mem_total_mb": real_memory,
+            "mem_allocated_mb": mem_allocated,
+            "mem_available_mb": mem_available,
+            "mem_down_mb": mem_down,
+            "state": state,
+            "raw_state": raw_state,
+            "partitions": sorted(partitions),
+            "accessible": accessible,
+        })
+    return nodes
+
+
+def _cpu_type_sort_key(cpu_type: str) -> int:
+    try:
+        return CPU_PRIORITY.index(cpu_type)
+    except ValueError:
+        return len(CPU_PRIORITY)
+
+
+def _build_cpu_summary(nodes: list[dict]) -> dict:
+    cpu_groups: dict[str, dict] = {}
+    for node in nodes:
+        ct = node["cpu_type"]
+        if ct not in cpu_groups:
+            cpu_groups[ct] = {
+                "cpu_type": ct,
+                "total": 0, "allocated": 0, "available": 0, "down": 0,
+                "mem_total_mb": 0, "mem_allocated_mb": 0,
+                "mem_available_mb": 0, "mem_down_mb": 0,
+                "nodes": [], "partitions": set(), "accessible": False,
+            }
+        g = cpu_groups[ct]
+        g["total"] += node["cpu_total"]
+        g["allocated"] += node["cpu_allocated"]
+        g["available"] += node["cpu_available"]
+        g["down"] += node["cpu_down"]
+        g["mem_total_mb"] += node["mem_total_mb"]
+        g["mem_allocated_mb"] += node["mem_allocated_mb"]
+        g["mem_available_mb"] += node["mem_available_mb"]
+        g["mem_down_mb"] += node["mem_down_mb"]
+        g["nodes"].append(node)
+        g["partitions"].update(node["partitions"])
+        if node["accessible"]:
+            g["accessible"] = True
+
+    sorted_groups = sorted(cpu_groups.values(), key=lambda g: _cpu_type_sort_key(g["cpu_type"]))
+    for g in sorted_groups:
+        g["partitions"] = sorted(g["partitions"])
+
+    total = sum(g["total"] for g in sorted_groups)
+    allocated = sum(g["allocated"] for g in sorted_groups)
+    available = sum(g["available"] for g in sorted_groups)
+    down = sum(g["down"] for g in sorted_groups)
+
+    return {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "totals": {"total": total, "allocated": allocated, "available": available, "down": down},
+        "cpu_types": sorted_groups,
+    }
+
+
+def get_cpu_status() -> dict:
+    now = time.time()
+    if _cpu_cache["data"] and (now - _cpu_cache["timestamp"]) < CACHE_TTL:
+        return _cpu_cache["data"]
+
+    raw = _run_scontrol()
+    nodes = _parse_cpu_nodes(raw)
+    data = _build_cpu_summary(nodes)
+    _cpu_cache["data"] = data
+    _cpu_cache["timestamp"] = now
     return data
 
 

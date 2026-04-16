@@ -2,14 +2,50 @@ let refreshInterval = 30;
 let countdown = refreshInterval;
 let timer = null;
 let currentData = null;
+let currentCpuData = null;
+let activeTab = "gpu";
+
+// --- Tab Switching ---
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById("gpu-tab").classList.toggle("hidden", tab !== "gpu");
+  document.getElementById("cpu-tab").classList.toggle("hidden", tab !== "cpu");
+  document.getElementById("tab-gpu").classList.toggle("active", tab === "gpu");
+  document.getElementById("tab-cpu").classList.toggle("active", tab === "cpu");
+
+  if (tab === "gpu" && currentData) {
+    render(currentData);
+  } else if (tab === "cpu") {
+    fetchCpuData();
+  }
+}
 
 // --- Fetch & Refresh ---
 
 async function fetchData() {
+  if (activeTab === "gpu") {
+    await fetchGpuData();
+  } else {
+    await fetchCpuData();
+  }
+}
+
+async function fetchGpuData() {
   try {
     const res = await fetch("/api/gpu-status");
     currentData = await res.json();
     render(currentData);
+  } catch (e) {
+    document.getElementById("last-updated").textContent = "Error fetching data";
+  }
+}
+
+async function fetchCpuData() {
+  try {
+    const res = await fetch("/api/cpu-status");
+    currentCpuData = await res.json();
+    renderCpu(currentCpuData);
   } catch (e) {
     document.getElementById("last-updated").textContent = "Error fetching data";
   }
@@ -31,7 +67,7 @@ function startTimer() {
   }, 1000);
 }
 
-// --- Rendering ---
+// --- GPU Rendering ---
 
 function render(data) {
   document.getElementById("last-updated").textContent = "Updated: " + data.timestamp;
@@ -97,7 +133,6 @@ function renderNodeTable(gpuTypes) {
 
     if (filtered.length === 0) continue;
 
-    // Section header
     const headerRow = document.createElement("tr");
     headerRow.className = "gpu-section-header";
     headerRow.id = "section-" + g.gpu_type;
@@ -120,6 +155,102 @@ function renderNodeTable(gpuTypes) {
         <td class="px-4 py-2 tabular-nums">${n.cpu_alloc}/${n.cpu_total}</td>
         <td class="px-4 py-2 tabular-nums">${memAllocGB}/${memTotalGB} GB</td>
         <td class="px-4 py-2 text-xs">${buildTimelineCell(n)}</td>
+        <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+}
+
+// --- CPU Rendering ---
+
+function renderCpu(data) {
+  document.getElementById("last-updated").textContent = "Updated: " + data.timestamp;
+  renderCpuSummaryStrip(data.totals);
+  renderCpuTypeCards(data.cpu_types);
+  renderCpuNodeTable(data.cpu_types);
+}
+
+function renderCpuSummaryStrip(totals) {
+  document.getElementById("cpu-stat-total").textContent = totals.total;
+  document.getElementById("cpu-stat-allocated").textContent = totals.allocated;
+  document.getElementById("cpu-stat-available").textContent = totals.available;
+  document.getElementById("cpu-stat-down").textContent = totals.down;
+}
+
+function renderCpuTypeCards(cpuTypes) {
+  const container = document.getElementById("cpu-cards");
+  container.innerHTML = "";
+
+  for (const g of cpuTypes) {
+    const card = document.createElement("div");
+    card.className = "gpu-card";
+    card.onclick = () => {
+      const target = document.getElementById("cpu-section-" + g.cpu_type);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+
+    const pct = g.total > 0 ? ((g.available / g.total) * 100).toFixed(0) : 0;
+
+    card.innerHTML = `
+      <div class="flex items-center justify-between mb-2">
+        <span class="font-bold text-base uppercase">${escHtml(g.cpu_type)}</span>
+        ${g.accessible ? '<span class="text-green-500 text-xs font-semibold">ACCESSIBLE</span>' : ""}
+      </div>
+      ${buildBar(g.available, g.allocated, g.down, g.total)}
+      <div class="flex items-center justify-between mt-2 text-sm">
+        <span class="font-semibold text-green-600 dark:text-green-400">${g.available} / ${g.total} available</span>
+        <span class="text-gray-500">${pct}%</span>
+      </div>
+      <div class="mt-2 flex flex-wrap gap-1">
+        ${g.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join("")}
+      </div>
+    `;
+    container.appendChild(card);
+  }
+}
+
+function renderCpuNodeTable(cpuTypes) {
+  const tbody = document.getElementById("cpu-node-table-body");
+  tbody.innerHTML = "";
+
+  const search = document.getElementById("search").value.toLowerCase();
+  const accessibleOnly = document.getElementById("filter-accessible").checked;
+  const hideDown = document.getElementById("filter-hide-down").checked;
+
+  for (const g of cpuTypes) {
+    const filtered = g.nodes.filter(n => {
+      if (search && !n.name.toLowerCase().includes(search)) return false;
+      if (accessibleOnly && !n.accessible) return false;
+      if (hideDown && (n.state === "down" || n.state === "drain")) return false;
+      return true;
+    });
+
+    if (filtered.length === 0) continue;
+
+    const headerRow = document.createElement("tr");
+    headerRow.className = "gpu-section-header";
+    headerRow.id = "cpu-section-" + g.cpu_type;
+    headerRow.innerHTML = `<td colspan="8">${escHtml(g.cpu_type.toUpperCase())} — ${g.available} / ${g.total} cores available</td>`;
+    tbody.appendChild(headerRow);
+
+    for (const n of filtered) {
+      const tr = document.createElement("tr");
+      if (!n.accessible) tr.className = "not-accessible";
+
+      const memTotalGB = (n.mem_total_mb / 1024).toFixed(0);
+      const memAllocGB = (n.mem_allocated_mb / 1024).toFixed(0);
+      const memAvailGB = (n.mem_available_mb / 1024).toFixed(0);
+      const memDownGB = (n.mem_down_mb / 1024).toFixed(0);
+
+      tr.innerHTML = `
+        <td class="px-4 py-2 font-mono text-xs">${escHtml(n.name)}</td>
+        <td class="px-4 py-2 uppercase font-semibold text-xs">${escHtml(n.cpu_type)}</td>
+        <td class="px-4 py-2 tabular-nums">${n.cpu_available}/${n.cpu_total}</td>
+        <td class="px-4 py-2">${buildMiniBar(n.cpu_available, n.cpu_allocated, n.cpu_down, n.cpu_total)}</td>
+        <td class="px-4 py-2">${n.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join(" ")}</td>
+        <td class="px-4 py-2 tabular-nums">${memAllocGB}/${memTotalGB} GB</td>
+        <td class="px-4 py-2">${buildMiniBar(parseInt(memAvailGB), parseInt(memAllocGB), parseInt(memDownGB), parseInt(memTotalGB))}</td>
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
       `;
       tbody.appendChild(tr);
@@ -221,17 +352,19 @@ function escHtml(s) {
 
 // --- Filter listeners ---
 
-document.getElementById("search").addEventListener("input", () => {
-  if (currentData) renderNodeTable(currentData.gpu_types);
-});
-document.getElementById("filter-accessible").addEventListener("change", () => {
-  if (currentData) renderNodeTable(currentData.gpu_types);
-});
-document.getElementById("filter-hide-down").addEventListener("change", () => {
-  if (currentData) renderNodeTable(currentData.gpu_types);
-});
+function reRenderActiveTable() {
+  if (activeTab === "gpu" && currentData) {
+    renderNodeTable(currentData.gpu_types);
+  } else if (activeTab === "cpu" && currentCpuData) {
+    renderCpuNodeTable(currentCpuData.cpu_types);
+  }
+}
+
+document.getElementById("search").addEventListener("input", reRenderActiveTable);
+document.getElementById("filter-accessible").addEventListener("change", reRenderActiveTable);
+document.getElementById("filter-hide-down").addEventListener("change", reRenderActiveTable);
 
 // --- Init ---
 
-fetchData();
+fetchGpuData();
 startTimer();

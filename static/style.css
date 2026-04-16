@@ -1,3 +1,30 @@
+/* Tab bar */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 1.5rem;
+}
+.tab-btn {
+  padding: 0.625rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover {
+  color: #374151;
+}
+.tab-btn.active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+}
+
 /* Stat cards */
 .stat-card {
   background: white;
@@ -83,14 +110,17 @@
 .state-other     { color: #6b7280; }
 
 /* Table rows */
-#node-table-body tr {
+#node-table-body tr,
+#cpu-node-table-body tr {
   border-bottom: 1px solid #e5e7eb;
   transition: background 0.15s;
 }
-#node-table-body tr:hover {
+#node-table-body tr:hover,
+#cpu-node-table-body tr:hover {
   background: #f9fafb;
 }
-#node-table-body tr.not-accessible {
+#node-table-body tr.not-accessible,
+#cpu-node-table-body tr.not-accessible {
   opacity: 0.55;
 }
 
@@ -112,6 +142,21 @@
 
 /* Dark mode */
 @media (prefers-color-scheme: dark) {
+  .tab-bar {
+    background: #1f2937;
+    border-color: #374151;
+  }
+  .tab-btn {
+    color: #9ca3af;
+  }
+  .tab-btn:hover {
+    color: #d1d5db;
+  }
+  .tab-btn.active {
+    color: #60a5fa;
+    border-bottom-color: #60a5fa;
+  }
+
   .stat-card {
     background: #1f2937;
     border-color: #374151;
@@ -136,8 +181,10 @@
   .badge-hw-grp   { background: #9a3412; color: #fed7aa; }
   .badge-other    { background: #374151; color: #9ca3af; }
 
-  #node-table-body tr { border-color: #374151; }
-  #node-table-body tr:hover { background: #1f2937; }
+  #node-table-body tr,
+  #cpu-node-table-body tr { border-color: #374151; }
+  #node-table-body tr:hover,
+  #cpu-node-table-body tr:hover { background: #1f2937; }
 
   .gpu-section-header td {
     background: #1f2937;
