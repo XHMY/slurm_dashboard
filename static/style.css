@@ -96,10 +96,17 @@
   border-radius: 9999px;
   line-height: 1.4;
 }
-.badge-preempt  { background: #dcfce7; color: #166534; }
-.badge-dgxh     { background: #dbeafe; color: #1e40af; }
-.badge-hw-grp   { background: #ffedd5; color: #9a3412; }
-.badge-other    { background: #f3f4f6; color: #4b5563; }
+/* Accessible partitions: color derived from --hue (set inline). */
+.badge-partition {
+  background: hsl(var(--hue, 220), 70%, 90%);
+  color: hsl(var(--hue, 220), 55%, 25%);
+}
+/* Non-accessible partitions: always gray. */
+.badge-partition-inaccessible,
+.badge-other {
+  background: #f3f4f6;
+  color: #9ca3af;
+}
 
 /* Job status badges */
 .badge-running   { background: #dcfce7; color: #166534; }
@@ -182,10 +189,12 @@
 
   .avail-bar, .avail-bar-mini { background: #374151; }
 
-  .badge-preempt  { background: #166534; color: #bbf7d0; }
-  .badge-dgxh     { background: #1e40af; color: #bfdbfe; }
-  .badge-hw-grp   { background: #9a3412; color: #fed7aa; }
-  .badge-other    { background: #374151; color: #9ca3af; }
+  .badge-partition {
+    background: hsl(var(--hue, 220), 40%, 25%);
+    color: hsl(var(--hue, 220), 75%, 85%);
+  }
+  .badge-partition-inaccessible,
+  .badge-other { background: #374151; color: #6b7280; }
 
   .badge-running   { background: #166534; color: #bbf7d0; }
   .badge-scheduled { background: #1e40af; color: #bfdbfe; }

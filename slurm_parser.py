@@ -10,9 +10,9 @@ from typing import Any, Optional
 _cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _cpu_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _user_jobs_cache: dict[str, Any] = {"data": None, "timestamp": 0}
+_accessible_partitions_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 CACHE_TTL = 30  # seconds
-
-ACCESSIBLE_PARTITIONS = {"dgxh", "hw-grp", "preempt"}
+ACCESSIBLE_PARTITIONS_TTL = 300  # partition permissions rarely change
 
 GPU_PRIORITY = [
     "h200", "h100-40g", "h100", "l40s", "a40", "v100",
@@ -26,6 +26,88 @@ CPU_PRIORITY = [
 
 DOWN_STATES = {"DOWN", "DRAINED", "NOT_RESPONDING", "FAIL", "FUTURE", "POWERING_DOWN", "POWERED_DOWN"}
 DRAIN_STATES = {"DRAIN", "DRAINING"}
+
+
+def _get_user_accounts(user: str) -> set[str]:
+    try:
+        r = subprocess.run(
+            ["sacctmgr", "-n", "-P", "show", "assoc", f"user={user}", "format=Account"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return {
+            line.split("|")[0].strip()
+            for line in r.stdout.strip().splitlines()
+            if line.strip()
+        }
+    except Exception:
+        return set()
+
+
+def _get_user_groups(user: str) -> set[str]:
+    try:
+        r = subprocess.run(
+            ["id", "-Gn", user], capture_output=True, text=True, timeout=5,
+        )
+        return set(r.stdout.strip().split())
+    except Exception:
+        return set()
+
+
+def _get_accessible_partitions() -> set[str]:
+    """Detect partitions the current user can submit to.
+
+    Resolution order:
+      1. $SLURM_DASHBOARD_ACCESSIBLE_PARTITIONS (comma-separated override)
+      2. AllowGroups / AllowAccounts / DenyAccounts from `scontrol show partition`,
+         matched against the user's OS groups and Slurm accounts.
+
+    Returns an empty set on failure; callers should treat empty as "cannot
+    determine — don't filter anything out" rather than "nothing accessible".
+    """
+    now = time.time()
+    cached = _accessible_partitions_cache["data"]
+    if cached is not None and (now - _accessible_partitions_cache["timestamp"]) < ACCESSIBLE_PARTITIONS_TTL:
+        return cached
+
+    override = os.environ.get("SLURM_DASHBOARD_ACCESSIBLE_PARTITIONS")
+    if override:
+        result = {p.strip() for p in override.split(",") if p.strip()}
+        _accessible_partitions_cache["data"] = result
+        _accessible_partitions_cache["timestamp"] = now
+        return result
+
+    user = os.environ.get("USER", "")
+    accounts = _get_user_accounts(user) if user else set()
+    groups = _get_user_groups(user) if user else set()
+
+    accessible: set[str] = set()
+    try:
+        r = subprocess.run(
+            ["scontrol", "show", "partition"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for block in re.split(r"\n\s*\n", r.stdout.strip()):
+            name = _parse_field(block, "PartitionName")
+            if not name:
+                continue
+            allow_groups = _parse_field(block, "AllowGroups") or "ALL"
+            allow_accounts = _parse_field(block, "AllowAccounts") or "ALL"
+            deny_accounts = _parse_field(block, "DenyAccounts")
+
+            group_ok = allow_groups == "ALL" or bool(groups & set(allow_groups.split(",")))
+            acct_ok = allow_accounts == "ALL" or bool(accounts & set(allow_accounts.split(",")))
+            if deny_accounts and deny_accounts not in ("", "(null)"):
+                if accounts & set(deny_accounts.split(",")):
+                    acct_ok = False
+
+            if group_ok and acct_ok:
+                accessible.add(name)
+    except Exception:
+        pass
+
+    _accessible_partitions_cache["data"] = accessible
+    _accessible_partitions_cache["timestamp"] = now
+    return accessible
 
 
 def _run_scontrol() -> str:
@@ -182,6 +264,7 @@ def _classify_state(raw_state: str) -> str:
 
 
 def _parse_nodes(raw: str) -> list[dict]:
+    accessible_parts = _get_accessible_partitions()
     blocks = re.split(r"\n\s*\n", raw.strip())
     nodes = []
     for block in blocks:
@@ -209,7 +292,7 @@ def _parse_nodes(raw: str) -> list[dict]:
         state = _classify_state(raw_state)
         gpu_alloc = _parse_alloc_gpu(alloc_tres)
         partitions = set(partitions_raw.split(",")) if partitions_raw else set()
-        accessible = bool(partitions & ACCESSIBLE_PARTITIONS)
+        accessible = not accessible_parts or bool(partitions & accessible_parts)
 
         if state in ("down", "drain"):
             gpu_down = gpu_total
@@ -280,6 +363,7 @@ def _build_summary(nodes: list[dict]) -> dict:
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "totals": {"total": total, "allocated": allocated, "available": available, "down": down},
         "gpu_types": sorted_groups,
+        "accessible_partitions": sorted(_get_accessible_partitions()),
     }
 
 
@@ -309,6 +393,7 @@ def get_gpu_status() -> dict:
 
 
 def _parse_cpu_nodes(raw: str) -> list[dict]:
+    accessible_parts = _get_accessible_partitions()
     blocks = re.split(r"\n\s*\n", raw.strip())
     nodes = []
     for block in blocks:
@@ -332,7 +417,7 @@ def _parse_cpu_nodes(raw: str) -> list[dict]:
         cpu_type = _detect_cpu_type(features)
         state = _classify_state(raw_state)
         partitions = set(partitions_raw.split(",")) if partitions_raw else set()
-        accessible = bool(partitions & ACCESSIBLE_PARTITIONS)
+        accessible = not accessible_parts or bool(partitions & accessible_parts)
 
         if state in ("down", "drain"):
             cpu_down = cpu_tot
@@ -414,6 +499,7 @@ def _build_cpu_summary(nodes: list[dict]) -> dict:
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "totals": {"total": total, "allocated": allocated, "available": available, "down": down},
         "cpu_types": sorted_groups,
+        "accessible_partitions": sorted(_get_accessible_partitions()),
     }
 
 
@@ -523,6 +609,7 @@ def _empty_user_jobs(user: str, error: Optional[str] = None) -> dict:
         "user": user,
         "counts": {"total": 0, "running": 0, "scheduled": 0, "pending": 0, "other": 0},
         "running": [], "scheduled": [], "pending": [], "other": [],
+        "accessible_partitions": sorted(_get_accessible_partitions()),
     }
     if error:
         data["error"] = error
@@ -573,6 +660,7 @@ def get_user_jobs() -> dict:
         "scheduled": scheduled,
         "pending": pending,
         "other": other,
+        "accessible_partitions": sorted(_get_accessible_partitions()),
     }
     _user_jobs_cache["data"] = data
     _user_jobs_cache["timestamp"] = now

@@ -126,7 +126,7 @@ function renderGpuTypeCards(gpuTypes) {
         <span class="text-gray-500">${pct}%</span>
       </div>
       <div class="mt-2 flex flex-wrap gap-1">
-        ${g.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join("")}
+        ${g.partitions.map(p => partitionBadge(p)).join("")}
       </div>
     `;
     container.appendChild(card);
@@ -171,7 +171,7 @@ function renderNodeTable(gpuTypes) {
         <td class="px-4 py-2 uppercase font-semibold text-xs">${escHtml(n.gpu_type)}</td>
         <td class="px-4 py-2 tabular-nums">${n.gpu_available}/${n.gpu_total}</td>
         <td class="px-4 py-2">${buildMiniBar(n.gpu_available, n.gpu_allocated, n.gpu_down, n.gpu_total)}</td>
-        <td class="px-4 py-2">${n.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join(" ")}</td>
+        <td class="px-4 py-2">${n.partitions.map(p => partitionBadge(p)).join(" ")}</td>
         <td class="px-4 py-2 tabular-nums">${cpuAvail}/${n.cpu_total}</td>
         <td class="px-4 py-2 tabular-nums">${memAvailGB}/${memTotalGB} GB</td>
         <td class="px-4 py-2 text-xs">${buildTimelineCell(n)}</td>
@@ -223,7 +223,7 @@ function renderCpuTypeCards(cpuTypes) {
         <span class="text-gray-500">${pct}%</span>
       </div>
       <div class="mt-2 flex flex-wrap gap-1">
-        ${g.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join("")}
+        ${g.partitions.map(p => partitionBadge(p)).join("")}
       </div>
     `;
     container.appendChild(card);
@@ -268,7 +268,7 @@ function renderCpuNodeTable(cpuTypes) {
         <td class="px-4 py-2 uppercase font-semibold text-xs">${escHtml(n.cpu_type)}</td>
         <td class="px-4 py-2 tabular-nums">${n.cpu_available}/${n.cpu_total}</td>
         <td class="px-4 py-2">${buildMiniBar(n.cpu_available, n.cpu_allocated, n.cpu_down, n.cpu_total)}</td>
-        <td class="px-4 py-2">${n.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join(" ")}</td>
+        <td class="px-4 py-2">${n.partitions.map(p => partitionBadge(p)).join(" ")}</td>
         <td class="px-4 py-2 tabular-nums">${memAvailGB}/${memTotalGB} GB</td>
         <td class="px-4 py-2">${buildMiniBar(parseInt(memAvailGB), parseInt(memAllocGB), parseInt(memDownGB), parseInt(memTotalGB))}</td>
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
@@ -382,7 +382,7 @@ function buildJobRow(j, groupKey) {
       `<div class="font-mono text-xs">${escHtml(j.job_id)}</div>` +
       `<div class="text-xs text-gray-500 truncate max-w-xs" title="${escHtml(j.name)}">${escHtml(j.name)}</div>` +
     `</td>` +
-    `<td class="px-4 py-2"><span class="badge ${badgeClass(j.partition)}">${escHtml(j.partition)}</span></td>` +
+    `<td class="px-4 py-2">${partitionBadge(j.partition)}</td>` +
     `<td class="px-4 py-2 tabular-nums">${j.cpus}</td>` +
     `<td class="px-4 py-2">${gpuCell}</td>` +
     `<td class="px-4 py-2">${memCell}</td>` +
@@ -420,11 +420,36 @@ function buildMiniBar(avail, alloc, down, total) {
   </div>`;
 }
 
-function badgeClass(partition) {
-  if (partition === "preempt") return "badge-preempt";
-  if (partition === "dgxh") return "badge-dgxh";
-  if (partition === "hw-grp") return "badge-hw-grp";
-  return "badge-other";
+// Stable per-name hue on a 12-bucket color wheel — same partition always gets same hue.
+function partitionHue(name) {
+  let h = 2166136261;
+  for (let i = 0; i < name.length; i++) {
+    h = Math.imul(h ^ name.charCodeAt(i), 16777619);
+  }
+  const buckets = 12;
+  return ((h >>> 0) % buckets) * (360 / buckets);
+}
+
+function accessibleSet() {
+  const src =
+    (currentData && currentData.accessible_partitions) ||
+    (currentCpuData && currentCpuData.accessible_partitions) ||
+    (currentJobsData && currentJobsData.accessible_partitions) ||
+    [];
+  return new Set(src);
+}
+
+function partitionBadge(partition) {
+  const esc = escHtml(partition);
+  const set = accessibleSet();
+  // If the server couldn't detect any accessible partitions, treat every
+  // partition as accessible (same graceful-degradation rule as the node flag).
+  const accessible = set.size === 0 || set.has(partition);
+  if (!accessible) {
+    return `<span class="badge badge-partition-inaccessible">${esc}</span>`;
+  }
+  const hue = partitionHue(partition);
+  return `<span class="badge badge-partition" style="--hue:${hue}">${esc}</span>`;
 }
 
 function buildTimelineCell(node) {
