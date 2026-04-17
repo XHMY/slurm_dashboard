@@ -3,6 +3,7 @@ let countdown = refreshInterval;
 let timer = null;
 let currentData = null;
 let currentCpuData = null;
+let currentJobsData = null;
 let activeTab = "gpu";
 
 // --- Tab Switching ---
@@ -11,13 +12,18 @@ function switchTab(tab) {
   activeTab = tab;
   document.getElementById("gpu-tab").classList.toggle("hidden", tab !== "gpu");
   document.getElementById("cpu-tab").classList.toggle("hidden", tab !== "cpu");
+  document.getElementById("jobs-tab").classList.toggle("hidden", tab !== "jobs");
   document.getElementById("tab-gpu").classList.toggle("active", tab === "gpu");
   document.getElementById("tab-cpu").classList.toggle("active", tab === "cpu");
+  document.getElementById("tab-jobs").classList.toggle("active", tab === "jobs");
+  document.getElementById("node-filters").classList.toggle("hidden", tab === "jobs");
 
   if (tab === "gpu" && currentData) {
     render(currentData);
   } else if (tab === "cpu") {
     fetchCpuData();
+  } else if (tab === "jobs") {
+    fetchJobsData();
   }
 }
 
@@ -26,8 +32,10 @@ function switchTab(tab) {
 async function fetchData() {
   if (activeTab === "gpu") {
     await fetchGpuData();
-  } else {
+  } else if (activeTab === "cpu") {
     await fetchCpuData();
+  } else if (activeTab === "jobs") {
+    await fetchJobsData();
   }
 }
 
@@ -46,6 +54,16 @@ async function fetchCpuData() {
     const res = await fetch("/api/cpu-status");
     currentCpuData = await res.json();
     renderCpu(currentCpuData);
+  } catch (e) {
+    document.getElementById("last-updated").textContent = "Error fetching data";
+  }
+}
+
+async function fetchJobsData() {
+  try {
+    const res = await fetch("/api/user-jobs");
+    currentJobsData = await res.json();
+    renderJobs(currentJobsData);
   } catch (e) {
     document.getElementById("last-updated").textContent = "Error fetching data";
   }
@@ -143,8 +161,10 @@ function renderNodeTable(gpuTypes) {
       const tr = document.createElement("tr");
       if (!n.accessible) tr.className = "not-accessible";
 
+      const isDown = n.state === "down" || n.state === "drain";
+      const cpuAvail = isDown ? 0 : n.cpu_total - n.cpu_alloc;
       const memTotalGB = (n.mem_total_mb / 1024).toFixed(0);
-      const memAllocGB = (n.mem_alloc_mb / 1024).toFixed(0);
+      const memAvailGB = isDown ? "0" : ((n.mem_total_mb - n.mem_alloc_mb) / 1024).toFixed(0);
 
       tr.innerHTML = `
         <td class="px-4 py-2 font-mono text-xs">${escHtml(n.name)}</td>
@@ -152,8 +172,8 @@ function renderNodeTable(gpuTypes) {
         <td class="px-4 py-2 tabular-nums">${n.gpu_available}/${n.gpu_total}</td>
         <td class="px-4 py-2">${buildMiniBar(n.gpu_available, n.gpu_allocated, n.gpu_down, n.gpu_total)}</td>
         <td class="px-4 py-2">${n.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join(" ")}</td>
-        <td class="px-4 py-2 tabular-nums">${n.cpu_alloc}/${n.cpu_total}</td>
-        <td class="px-4 py-2 tabular-nums">${memAllocGB}/${memTotalGB} GB</td>
+        <td class="px-4 py-2 tabular-nums">${cpuAvail}/${n.cpu_total}</td>
+        <td class="px-4 py-2 tabular-nums">${memAvailGB}/${memTotalGB} GB</td>
         <td class="px-4 py-2 text-xs">${buildTimelineCell(n)}</td>
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
       `;
@@ -249,13 +269,129 @@ function renderCpuNodeTable(cpuTypes) {
         <td class="px-4 py-2 tabular-nums">${n.cpu_available}/${n.cpu_total}</td>
         <td class="px-4 py-2">${buildMiniBar(n.cpu_available, n.cpu_allocated, n.cpu_down, n.cpu_total)}</td>
         <td class="px-4 py-2">${n.partitions.map(p => `<span class="badge ${badgeClass(p)}">${escHtml(p)}</span>`).join(" ")}</td>
-        <td class="px-4 py-2 tabular-nums">${memAllocGB}/${memTotalGB} GB</td>
+        <td class="px-4 py-2 tabular-nums">${memAvailGB}/${memTotalGB} GB</td>
         <td class="px-4 py-2">${buildMiniBar(parseInt(memAvailGB), parseInt(memAllocGB), parseInt(memDownGB), parseInt(memTotalGB))}</td>
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
       `;
       tbody.appendChild(tr);
     }
   }
+}
+
+// --- My Jobs Rendering ---
+
+function renderJobs(data) {
+  document.getElementById("last-updated").textContent = "Updated: " + data.timestamp;
+  document.getElementById("jobs-user").textContent = data.user || "(unknown)";
+
+  const errBox = document.getElementById("jobs-error");
+  if (data.error) {
+    errBox.textContent = "Error: " + data.error;
+    errBox.classList.remove("hidden");
+  } else {
+    errBox.classList.add("hidden");
+  }
+
+  const c = data.counts || {total: 0, running: 0, scheduled: 0, pending: 0};
+  document.getElementById("jobs-stat-total").textContent = c.total;
+  document.getElementById("jobs-stat-running").textContent = c.running;
+  document.getElementById("jobs-stat-scheduled").textContent = c.scheduled;
+  document.getElementById("jobs-stat-pending").textContent = c.pending;
+
+  renderJobsTable(data);
+}
+
+function renderJobsTable(data) {
+  const tbody = document.getElementById("jobs-table-body");
+  tbody.innerHTML = "";
+
+  const groups = [
+    { key: "running",   label: "Running",   rows: data.running   || [] },
+    { key: "scheduled", label: "Scheduled", rows: data.scheduled || [] },
+    { key: "pending",   label: "Pending",   rows: data.pending   || [] },
+    { key: "other",     label: "Other",     rows: data.other     || [] },
+  ];
+
+  let rendered = 0;
+  for (const { key, label, rows } of groups) {
+    if (rows.length === 0) continue;
+    const hdr = document.createElement("tr");
+    hdr.className = "gpu-section-header";
+    hdr.innerHTML = `<td colspan="9">${escHtml(label.toUpperCase())} — ${rows.length} job${rows.length > 1 ? "s" : ""}</td>`;
+    tbody.appendChild(hdr);
+    for (const j of rows) {
+      tbody.appendChild(buildJobRow(j, key));
+      rendered++;
+    }
+  }
+
+  if (rendered === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="9" class="px-4 py-6 text-center text-gray-500">No jobs found for current user.</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function buildJobRow(j, groupKey) {
+  const tr = document.createElement("tr");
+
+  const gpuCell = j.gpu_count > 0
+    ? `<span class="tabular-nums">${j.gpu_count}</span>`
+    : `<span class="text-gray-400">—</span>`;
+
+  const memCell = j.min_memory && j.min_memory !== "N/A"
+    ? `<span class="tabular-nums">${escHtml(j.min_memory)}</span>`
+    : `<span class="text-gray-400">—</span>`;
+
+  const constraintsCell = (j.features_list && j.features_list.length > 0)
+    ? j.features_list.map(f => `<span class="badge badge-feature">${escHtml(f)}</span>`).join(" ")
+    : `<span class="text-gray-400">—</span>`;
+
+  let nodeWhen = "";
+  let status = "";
+
+  if (groupKey === "running") {
+    const node = (j.nodelist && j.nodelist !== "(null)") ? j.nodelist : "(assigning)";
+    nodeWhen =
+      `<div class="font-mono text-xs">${escHtml(node)}</div>` +
+      `<div class="text-xs text-gray-500">${escHtml(j.time_left)} left</div>`;
+    status = `<span class="badge badge-running">RUNNING</span>`;
+  } else if (groupKey === "scheduled") {
+    const start = new Date(j.start_time);
+    const rel = isNaN(start) ? "?" : formatRelativeTime(start - new Date());
+    nodeWhen =
+      `<div class="text-xs">starts in <span class="font-mono">${escHtml(rel)}</span></div>` +
+      `<div class="text-xs text-gray-500 font-mono" title="${escHtml(j.start_time)}">${escHtml(j.start_time)}</div>`;
+    status = `<span class="badge badge-scheduled">SCHEDULED</span>`;
+  } else if (groupKey === "pending") {
+    const reqTime = j.time_limit && j.time_limit !== "N/A" ? j.time_limit : "-";
+    nodeWhen =
+      `<div class="text-xs">requested <span class="font-mono">${escHtml(reqTime)}</span></div>` +
+      `<div class="text-xs text-gray-500">${escHtml(j.reason || "-")}</div>`;
+    const rank = j.rank != null ? j.rank : "?";
+    status =
+      `<span class="badge badge-rank" title="priority ${escHtml(String(j.priority))}">#${escHtml(String(rank))}</span>` +
+      `<div class="text-xs text-gray-500 mt-1">${escHtml(j.reason || "")}</div>`;
+  } else {
+    nodeWhen = `<span class="text-gray-400">—</span>`;
+    status = `<span class="badge badge-other">${escHtml(j.state)}</span>`;
+  }
+
+  tr.innerHTML =
+    `<td class="px-4 py-2">` +
+      `<div class="font-mono text-xs">${escHtml(j.job_id)}</div>` +
+      `<div class="text-xs text-gray-500 truncate max-w-xs" title="${escHtml(j.name)}">${escHtml(j.name)}</div>` +
+    `</td>` +
+    `<td class="px-4 py-2"><span class="badge ${badgeClass(j.partition)}">${escHtml(j.partition)}</span></td>` +
+    `<td class="px-4 py-2 tabular-nums">${j.cpus}</td>` +
+    `<td class="px-4 py-2">${gpuCell}</td>` +
+    `<td class="px-4 py-2">${memCell}</td>` +
+    `<td class="px-4 py-2 tabular-nums">${j.num_nodes}</td>` +
+    `<td class="px-4 py-2">${constraintsCell}</td>` +
+    `<td class="px-4 py-2">${nodeWhen}</td>` +
+    `<td class="px-4 py-2">${status}</td>`;
+
+  return tr;
 }
 
 // --- Helpers ---

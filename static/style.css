@@ -101,6 +101,12 @@
 .badge-hw-grp   { background: #ffedd5; color: #9a3412; }
 .badge-other    { background: #f3f4f6; color: #4b5563; }
 
+/* Job status badges */
+.badge-running   { background: #dcfce7; color: #166534; }
+.badge-scheduled { background: #dbeafe; color: #1e40af; }
+.badge-rank      { background: #fef3c7; color: #92400e; font-variant-numeric: tabular-nums; }
+.badge-feature   { background: #f3f4f6; color: #4b5563; }
+
 /* State badges */
 .state-idle      { color: #16a34a; }
 .state-mixed     { color: #d97706; }
@@ -180,6 +186,11 @@
   .badge-dgxh     { background: #1e40af; color: #bfdbfe; }
   .badge-hw-grp   { background: #9a3412; color: #fed7aa; }
   .badge-other    { background: #374151; color: #9ca3af; }
+
+  .badge-running   { background: #166534; color: #bbf7d0; }
+  .badge-scheduled { background: #1e40af; color: #bfdbfe; }
+  .badge-rank      { background: #92400e; color: #fde68a; }
+  .badge-feature   { background: #374151; color: #9ca3af; }
 
   #node-table-body tr,
   #cpu-node-table-body tr { border-color: #374151; }

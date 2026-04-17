@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from slurm_parser import get_cpu_status, get_gpu_status
+from slurm_parser import get_cpu_status, get_gpu_status, get_user_jobs
 
 app = FastAPI(title="Slurm Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -27,6 +27,11 @@ async def gpu_status():
 @app.get("/api/cpu-status")
 async def cpu_status():
     return get_cpu_status()
+
+
+@app.get("/api/user-jobs")
+async def user_jobs():
+    return get_user_jobs()
 
 
 if __name__ == "__main__":

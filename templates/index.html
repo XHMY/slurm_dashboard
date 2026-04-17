@@ -23,10 +23,11 @@
   <div class="tab-bar">
     <button class="tab-btn active" onclick="switchTab('gpu')" id="tab-gpu">GPU</button>
     <button class="tab-btn" onclick="switchTab('cpu')" id="tab-cpu">CPU</button>
+    <button class="tab-btn" onclick="switchTab('jobs')" id="tab-jobs">My Jobs</button>
   </div>
 
   <!-- Filters -->
-  <div class="px-6 py-3 flex flex-wrap items-center gap-4 text-sm bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+  <div id="node-filters" class="px-6 py-3 flex flex-wrap items-center gap-4 text-sm bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
     <input id="search" type="text" placeholder="Search node name..." class="px-3 py-1.5 border rounded dark:bg-gray-700 dark:border-gray-600 w-56">
     <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="filter-accessible" checked> Accessible only</label>
     <label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="filter-hide-down"> Hide DOWN nodes</label>
@@ -103,6 +104,42 @@
             </tr>
           </thead>
           <tbody id="cpu-node-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- My Jobs Tab -->
+  <main id="jobs-tab" class="px-6 py-6 max-w-7xl mx-auto space-y-8 hidden">
+
+    <div id="jobs-summary-strip" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="stat-card"><div class="stat-label">Total Jobs</div><div class="stat-value" id="jobs-stat-total">-</div></div>
+      <div class="stat-card"><div class="stat-label">Running</div><div class="stat-value text-green-600 dark:text-green-400" id="jobs-stat-running">-</div></div>
+      <div class="stat-card"><div class="stat-label">Scheduled</div><div class="stat-value text-blue-600 dark:text-blue-400" id="jobs-stat-scheduled">-</div></div>
+      <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value text-amber-600 dark:text-amber-400" id="jobs-stat-pending">-</div></div>
+    </div>
+
+    <div id="jobs-error" class="hidden px-4 py-3 rounded bg-red-50 border border-red-200 text-red-700 dark:bg-red-900/30 dark:border-red-700 dark:text-red-300 text-sm"></div>
+
+    <section>
+      <h2 class="text-lg font-semibold mb-3">Jobs for <span id="jobs-user" class="font-mono"></span></h2>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-100 dark:bg-gray-800 text-left">
+            <tr>
+              <th class="px-4 py-2">Job</th>
+              <th class="px-4 py-2">Partition</th>
+              <th class="px-4 py-2">CPU</th>
+              <th class="px-4 py-2">GPU</th>
+              <th class="px-4 py-2">Mem</th>
+              <th class="px-4 py-2">Nodes</th>
+              <th class="px-4 py-2">Constraints</th>
+              <th class="px-4 py-2 w-48">Node / When</th>
+              <th class="px-4 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-table-body"></tbody>
         </table>
       </div>
     </section>

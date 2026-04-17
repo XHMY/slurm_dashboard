@@ -1,13 +1,15 @@
 """Parse scontrol -a show nodes output into structured GPU/CPU availability data."""
 
 import json
+import os
 import re
 import subprocess
 import time
-from typing import Any
+from typing import Any, Optional
 
 _cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _cpu_cache: dict[str, Any] = {"data": None, "timestamp": 0}
+_user_jobs_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 CACHE_TTL = 30  # seconds
 
 ACCESSIBLE_PARTITIONS = {"dgxh", "hw-grp", "preempt"}
@@ -425,6 +427,155 @@ def get_cpu_status() -> dict:
     data = _build_cpu_summary(nodes)
     _cpu_cache["data"] = data
     _cpu_cache["timestamp"] = now
+    return data
+
+
+_RUNNING_STATES = {"RUNNING", "COMPLETING", "CONFIGURING"}
+_UNSCHEDULED_START = {"", "N/A", "Unknown"}
+_SQUEUE_USER_FMT = "%i|%j|%T|%P|%r|%M|%L|%l|%D|%V|%S|%Q|%b|%C|%m|%f|%R|%N"
+
+
+def _run_squeue_user(user: str) -> str:
+    result = subprocess.run(
+        ["squeue", "-u", user, "-o", _SQUEUE_USER_FMT, "--noheader"],
+        capture_output=True, text=True, timeout=30,
+    )
+    return result.stdout
+
+
+def _classify_job_group(state: str, start_time: str) -> str:
+    state_u = state.upper()
+    if state_u in _RUNNING_STATES:
+        return "running"
+    if state_u == "PENDING":
+        if start_time in _UNSCHEDULED_START:
+            return "pending"
+        return "scheduled"
+    return "other"
+
+
+def _parse_user_jobs(raw: str) -> list[dict]:
+    jobs: list[dict] = []
+    for line in raw.strip().splitlines():
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 18:
+            continue
+        (job_id, name, state, partition, reason, time_used, time_left, time_limit,
+         num_nodes, submit_time, start_time, priority, tres_per_node, cpus,
+         min_memory, features, nodelist_reason, nodelist) = parts[:18]
+
+        try:
+            num_nodes_i = int(num_nodes)
+        except ValueError:
+            num_nodes_i = 0
+        try:
+            cpus_i = int(cpus)
+        except ValueError:
+            cpus_i = 0
+        try:
+            priority_i = int(priority)
+        except ValueError:
+            priority_i = 0
+
+        features_list = (
+            [] if features in ("", "(null)", "N/A")
+            else [f for f in features.split(",") if f]
+        )
+        nodes_list = (
+            _expand_nodelist(nodelist)
+            if nodelist and nodelist not in ("(null)", "N/A")
+            else []
+        )
+
+        jobs.append({
+            "job_id": job_id,
+            "name": name,
+            "state": state,
+            "partition": partition,
+            "reason": reason,
+            "time_used": time_used,
+            "time_left": time_left,
+            "time_limit": time_limit,
+            "num_nodes": num_nodes_i,
+            "submit_time": submit_time,
+            "start_time": start_time,
+            "priority": priority_i,
+            "tres_per_node": tres_per_node,
+            "cpus": cpus_i,
+            "min_memory": min_memory,
+            "features": features,
+            "features_list": features_list,
+            "nodelist_reason": nodelist_reason,
+            "nodelist": nodelist,
+            "nodes_list": nodes_list,
+            "gpu_count": _parse_squeue_gpu_count(tres_per_node),
+            "group": _classify_job_group(state, start_time),
+        })
+    return jobs
+
+
+def _empty_user_jobs(user: str, error: Optional[str] = None) -> dict:
+    data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "user": user,
+        "counts": {"total": 0, "running": 0, "scheduled": 0, "pending": 0, "other": 0},
+        "running": [], "scheduled": [], "pending": [], "other": [],
+    }
+    if error:
+        data["error"] = error
+    return data
+
+
+def get_user_jobs() -> dict:
+    now = time.time()
+    if _user_jobs_cache["data"] and (now - _user_jobs_cache["timestamp"]) < CACHE_TTL:
+        return _user_jobs_cache["data"]
+
+    user = os.environ.get("USER", "")
+    if not user:
+        return _empty_user_jobs(user, error="USER environment variable not set")
+
+    try:
+        raw = _run_squeue_user(user)
+    except Exception as e:
+        return _empty_user_jobs(user, error=str(e))
+
+    jobs = _parse_user_jobs(raw)
+
+    running = [j for j in jobs if j["group"] == "running"]
+    scheduled = sorted(
+        (j for j in jobs if j["group"] == "scheduled"),
+        key=lambda j: j["start_time"],
+    )
+    pending = sorted(
+        (j for j in jobs if j["group"] == "pending"),
+        key=lambda j: (-j["priority"], j["submit_time"]),
+    )
+    other = [j for j in jobs if j["group"] == "other"]
+
+    for i, j in enumerate(pending, start=1):
+        j["rank"] = i
+
+    data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "user": user,
+        "counts": {
+            "total": len(jobs),
+            "running": len(running),
+            "scheduled": len(scheduled),
+            "pending": len(pending),
+            "other": len(other),
+        },
+        "running": running,
+        "scheduled": scheduled,
+        "pending": pending,
+        "other": other,
+    }
+    _user_jobs_cache["data"] = data
+    _user_jobs_cache["timestamp"] = now
     return data
 
 
