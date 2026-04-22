@@ -5,11 +5,14 @@ let currentData = null;
 let currentCpuData = null;
 let currentJobsData = null;
 let activeTab = "gpu";
+let expandedNode = null;
 
 // --- Tab Switching ---
 
 function switchTab(tab) {
+  const previousTab = activeTab;
   activeTab = tab;
+  if (previousTab !== tab) expandedNode = null;
   document.getElementById("gpu-tab").classList.toggle("hidden", tab !== "gpu");
   document.getElementById("cpu-tab").classList.toggle("hidden", tab !== "cpu");
   document.getElementById("jobs-tab").classList.toggle("hidden", tab !== "jobs");
@@ -159,7 +162,25 @@ function renderNodeTable(gpuTypes) {
 
     for (const n of filtered) {
       const tr = document.createElement("tr");
-      if (!n.accessible) tr.className = "not-accessible";
+      tr.className = "node-row";
+      tr.dataset.nodeName = n.name;
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.setAttribute("aria-label", "Show jobs on " + n.name);
+      if (!n.accessible) tr.classList.add("not-accessible");
+      tr.addEventListener("click", () => toggleNodeDetails(n, "gpu"));
+      tr.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleNodeDetails(n, "gpu");
+        }
+      });
+      if (isExpandedNode(n.name, "gpu")) {
+        tr.classList.add("selected");
+        tr.setAttribute("aria-expanded", "true");
+      } else {
+        tr.setAttribute("aria-expanded", "false");
+      }
 
       const isDown = n.state === "down" || n.state === "drain";
       const cpuAvail = isDown ? 0 : n.cpu_total - n.cpu_alloc;
@@ -178,6 +199,9 @@ function renderNodeTable(gpuTypes) {
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
       `;
       tbody.appendChild(tr);
+      if (isExpandedNode(n.name, "gpu")) {
+        tbody.appendChild(buildNodeDetailsRow(n, 9));
+      }
     }
   }
 }
@@ -256,7 +280,25 @@ function renderCpuNodeTable(cpuTypes) {
 
     for (const n of filtered) {
       const tr = document.createElement("tr");
-      if (!n.accessible) tr.className = "not-accessible";
+      tr.className = "node-row";
+      tr.dataset.nodeName = n.name;
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.setAttribute("aria-label", "Show jobs on " + n.name);
+      if (!n.accessible) tr.classList.add("not-accessible");
+      tr.addEventListener("click", () => toggleNodeDetails(n, "cpu"));
+      tr.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleNodeDetails(n, "cpu");
+        }
+      });
+      if (isExpandedNode(n.name, "cpu")) {
+        tr.classList.add("selected");
+        tr.setAttribute("aria-expanded", "true");
+      } else {
+        tr.setAttribute("aria-expanded", "false");
+      }
 
       const memTotalGB = (n.mem_total_mb / 1024).toFixed(0);
       const memAllocGB = (n.mem_allocated_mb / 1024).toFixed(0);
@@ -274,8 +316,67 @@ function renderCpuNodeTable(cpuTypes) {
         <td class="px-4 py-2 text-xs"><span class="font-semibold state-${n.state}">${escHtml(n.raw_state)}</span></td>
       `;
       tbody.appendChild(tr);
+      if (isExpandedNode(n.name, "cpu")) {
+        tbody.appendChild(buildNodeDetailsRow(n, 8));
+      }
     }
   }
+}
+
+// --- Node Details Dropdown ---
+
+function toggleNodeDetails(node, view) {
+  if (isExpandedNode(node.name, view)) {
+    expandedNode = null;
+  } else {
+    expandedNode = { name: node.name, view };
+  }
+  reRenderActiveTable();
+}
+
+function isExpandedNode(name, view) {
+  return expandedNode && expandedNode.view === view && expandedNode.name === name;
+}
+
+function buildNodeDetailsRow(node, colspan) {
+  const tr = document.createElement("tr");
+  tr.className = "node-details-row";
+
+  tr.innerHTML = `
+    <td colspan="${colspan}" class="node-details-cell">
+      <div class="node-details">
+        <div class="node-details-title">Current Jobs (${(node.current_jobs || []).length})</div>
+        ${buildCurrentJobList(node.current_jobs || [])}
+      </div>
+    </td>
+  `;
+  return tr;
+}
+
+function buildCurrentJobList(jobs) {
+  if (!jobs || jobs.length === 0) {
+    return `<div class="node-empty">No current jobs on this node.</div>`;
+  }
+
+  return jobs.map(job => {
+    const gpuCell = job.gpu_count > 0 ? String(job.gpu_count) : "--";
+    const endTime = job.end_time && job.end_time !== "N/A" ? job.end_time : "N/A";
+    return `
+      <div class="node-job">
+        <span class="node-job-id">${escHtml(job.job_id)}</span>
+        <span class="node-job-name" title="${escHtml(job.name)}">${escHtml(job.name)}</span>
+        <span title="Partition">${escHtml(job.partition)}</span>
+        <span title="CPU">CPU ${escHtml(String(job.cpus))}</span>
+        <span title="GPU">GPU ${escHtml(gpuCell)}</span>
+        <span title="Memory">Mem ${escHtml(job.min_memory || "N/A")}</span>
+        <span title="Remaining time">Left ${escHtml(job.time_left || "N/A")}</span>
+        <span>${escHtml(job.user)}</span>
+        <span class="badge badge-running">${escHtml(job.state)}</span>
+        <span>${escHtml(job.time_used || "N/A")} used</span>
+        <span title="${escHtml(endTime)}">${escHtml(endTime)}</span>
+      </div>
+    `;
+  }).join("");
 }
 
 // --- My Jobs Rendering ---
@@ -507,7 +608,7 @@ function formatRelativeTime(ms) {
 
 function escHtml(s) {
   const d = document.createElement("div");
-  d.textContent = s;
+  d.textContent = s == null ? "" : s;
   return d.innerHTML;
 }
 

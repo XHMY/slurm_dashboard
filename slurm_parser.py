@@ -126,6 +126,21 @@ def _run_squeue() -> str:
     return result.stdout
 
 
+def _run_current_jobs_squeue() -> str:
+    result = subprocess.run(
+        [
+            "squeue",
+            "-o",
+            "%i|%j|%u|%T|%P|%M|%L|%e|%b|%C|%m|%N",
+            "-t",
+            "RUNNING,COMPLETING,CONFIGURING",
+            "--noheader",
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    return result.stdout
+
+
 def _expand_nodelist(nodelist: str) -> list[str]:
     if "[" not in nodelist:
         return [nodelist]
@@ -176,6 +191,50 @@ def _parse_squeue(raw: str) -> dict[str, list[dict]]:
     return node_jobs
 
 
+def _parse_current_node_jobs(raw: str) -> dict[str, list[dict]]:
+    node_jobs: dict[str, list[dict]] = {}
+    for line in raw.strip().splitlines():
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 12:
+            continue
+        (
+            job_id, name, user, state, partition, time_used, time_left,
+            end_time, tres_per_node, cpus, min_memory, nodelist,
+        ) = parts[:12]
+        if not nodelist or nodelist in ("(null)", "N/A"):
+            continue
+        try:
+            cpus_i = int(cpus)
+        except ValueError:
+            cpus_i = 0
+
+        expanded = _expand_nodelist(nodelist)
+        job_info = {
+            "job_id": job_id,
+            "name": name,
+            "user": user,
+            "state": state,
+            "partition": partition,
+            "time_used": time_used,
+            "time_left": time_left,
+            "end_time": end_time,
+            "tres_per_node": tres_per_node,
+            "cpus": cpus_i,
+            "min_memory": min_memory,
+            "nodelist": nodelist,
+            "gpu_count": _parse_squeue_gpu_count(tres_per_node),
+        }
+        for node in expanded:
+            node_jobs.setdefault(node, []).append(job_info)
+
+    for jobs in node_jobs.values():
+        jobs.sort(key=lambda j: (j["user"], j["job_id"]))
+    return node_jobs
+
+
 def _enrich_nodes_with_jobs(nodes: list[dict], node_jobs: dict[str, list[dict]]) -> None:
     for node in nodes:
         jobs = node_jobs.get(node["name"], [])
@@ -194,6 +253,11 @@ def _enrich_nodes_with_jobs(nodes: list[dict], node_jobs: dict[str, list[dict]])
              "end_time": j["end_time"], "time_left": j["time_left"]}
             for j in sorted_jobs
         ]
+
+
+def _enrich_nodes_with_current_jobs(nodes: list[dict], node_jobs: dict[str, list[dict]]) -> None:
+    for node in nodes:
+        node["current_jobs"] = node_jobs.get(node["name"], [])
 
 
 def _parse_field(block: str, field: str) -> str:
@@ -386,6 +450,14 @@ def get_gpu_status() -> dict:
             node.setdefault("next_gpu_free_count", 0)
             node.setdefault("all_gpus_free_at", None)
 
+    try:
+        current_jobs_raw = _run_current_jobs_squeue()
+        current_node_jobs = _parse_current_node_jobs(current_jobs_raw)
+        _enrich_nodes_with_current_jobs(nodes, current_node_jobs)
+    except Exception:
+        for node in nodes:
+            node.setdefault("current_jobs", [])
+
     data = _build_summary(nodes)
     _cache["data"] = data
     _cache["timestamp"] = now
@@ -510,6 +582,13 @@ def get_cpu_status() -> dict:
 
     raw = _run_scontrol()
     nodes = _parse_cpu_nodes(raw)
+    try:
+        current_jobs_raw = _run_current_jobs_squeue()
+        current_node_jobs = _parse_current_node_jobs(current_jobs_raw)
+        _enrich_nodes_with_current_jobs(nodes, current_node_jobs)
+    except Exception:
+        for node in nodes:
+            node.setdefault("current_jobs", [])
     data = _build_cpu_summary(nodes)
     _cpu_cache["data"] = data
     _cpu_cache["timestamp"] = now
