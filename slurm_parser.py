@@ -143,7 +143,7 @@ def _run_current_jobs_squeue() -> str:
 
 def _expand_nodelist(nodelist: str) -> list[str]:
     if "[" not in nodelist:
-        return [nodelist]
+        return [n.strip() for n in nodelist.split(",") if n.strip()]
     try:
         result = subprocess.run(
             ["scontrol", "show", "hostnames", nodelist],
@@ -212,6 +212,8 @@ def _parse_current_node_jobs(raw: str) -> dict[str, list[dict]]:
             cpus_i = 0
 
         expanded = _expand_nodelist(nodelist)
+        num_nodes = len(expanded)
+        cpus_per_node = cpus_i // num_nodes if num_nodes > 1 else cpus_i
         job_info = {
             "job_id": job_id,
             "name": name,
@@ -222,7 +224,7 @@ def _parse_current_node_jobs(raw: str) -> dict[str, list[dict]]:
             "time_left": time_left,
             "end_time": end_time,
             "tres_per_node": tres_per_node,
-            "cpus": cpus_i,
+            "cpus": cpus_per_node,
             "min_memory": min_memory,
             "nodelist": nodelist,
             "gpu_count": _parse_squeue_gpu_count(tres_per_node),
