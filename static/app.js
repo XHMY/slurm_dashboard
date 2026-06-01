@@ -4,29 +4,50 @@ let timer = null;
 let currentData = null;
 let currentCpuData = null;
 let currentJobsData = null;
+let currentStorageData = null;
+let storageLoaded = false;  // lazy-load guard: storage fetches only on first view / manual refresh
 let activeTab = "gpu";
 let expandedNode = null;
+const STORAGE_KEYS = {
+  activeTab: "slurmDashboard.activeTab",
+  accessibleOnly: "slurmDashboard.accessibleOnly",
+  hideDown: "slurmDashboard.hideDown",
+};
 
 // --- Tab Switching ---
 
-function switchTab(tab) {
+function switchTab(tab, options = {}) {
+  const { persist = true, fetchIfNeeded = true } = options;
   const previousTab = activeTab;
   activeTab = tab;
+  if (persist) saveStoredValue(STORAGE_KEYS.activeTab, tab);
   if (previousTab !== tab) expandedNode = null;
   document.getElementById("gpu-tab").classList.toggle("hidden", tab !== "gpu");
   document.getElementById("cpu-tab").classList.toggle("hidden", tab !== "cpu");
   document.getElementById("jobs-tab").classList.toggle("hidden", tab !== "jobs");
+  document.getElementById("storage-tab").classList.toggle("hidden", tab !== "storage");
   document.getElementById("tab-gpu").classList.toggle("active", tab === "gpu");
   document.getElementById("tab-cpu").classList.toggle("active", tab === "cpu");
   document.getElementById("tab-jobs").classList.toggle("active", tab === "jobs");
-  document.getElementById("node-filters").classList.toggle("hidden", tab === "jobs");
+  document.getElementById("tab-storage").classList.toggle("active", tab === "storage");
+  document.getElementById("node-filters").classList.toggle("hidden", tab === "jobs" || tab === "storage");
 
-  if (tab === "gpu" && currentData) {
-    render(currentData);
+  if (!fetchIfNeeded) return;
+
+  if (tab === "gpu") {
+    if (currentData) render(currentData);
+    fetchGpuData();
   } else if (tab === "cpu") {
+    if (currentCpuData) renderCpu(currentCpuData);
     fetchCpuData();
   } else if (tab === "jobs") {
+    if (currentJobsData) renderJobs(currentJobsData);
     fetchJobsData();
+  } else if (tab === "storage") {
+    // Lazy load: fetch only the first time storage is opened. Re-render cached
+    // data on subsequent visits; the Refresh button re-fetches explicitly.
+    if (currentStorageData) renderStorage(currentStorageData);
+    if (!storageLoaded) fetchStorageData();
   }
 }
 
@@ -72,6 +93,25 @@ async function fetchJobsData() {
   }
 }
 
+// Storage is intentionally excluded from fetchData()/startTimer() — it is lazy
+// and never auto-refreshes. It is fetched only on first tab open and via its
+// own Refresh button (force=true bypasses the server's 30s cache).
+async function fetchStorageData(force = false) {
+  const loading = document.getElementById("storage-loading");
+  loading.textContent = "Loading storage usage… (unreachable mounts may take a few seconds)";
+  loading.classList.remove("hidden");
+  try {
+    const res = await fetch("/api/storage-status" + (force ? "?force=true" : ""));
+    currentStorageData = await res.json();
+    storageLoaded = true;
+    renderStorage(currentStorageData);
+  } catch (e) {
+    loading.textContent = "Error fetching storage data";
+    return;
+  }
+  loading.classList.add("hidden");
+}
+
 function manualRefresh() {
   countdown = refreshInterval;
   fetchData();
@@ -91,10 +131,11 @@ function startTimer() {
 // --- GPU Rendering ---
 
 function render(data) {
+  const gpuTypes = filterGpuTypes(data.gpu_types);
   document.getElementById("last-updated").textContent = "Updated: " + data.timestamp;
-  renderSummaryStrip(data.totals);
-  renderGpuTypeCards(data.gpu_types);
-  renderNodeTable(data.gpu_types);
+  renderSummaryStrip(sumGroupTotals(gpuTypes));
+  renderGpuTypeCards(gpuTypes);
+  renderNodeTable(gpuTypes);
 }
 
 function renderSummaryStrip(totals) {
@@ -140,27 +181,14 @@ function renderNodeTable(gpuTypes) {
   const tbody = document.getElementById("node-table-body");
   tbody.innerHTML = "";
 
-  const search = document.getElementById("search").value.toLowerCase();
-  const accessibleOnly = document.getElementById("filter-accessible").checked;
-  const hideDown = document.getElementById("filter-hide-down").checked;
-
   for (const g of gpuTypes) {
-    const filtered = g.nodes.filter(n => {
-      if (search && !n.name.toLowerCase().includes(search)) return false;
-      if (accessibleOnly && !n.accessible) return false;
-      if (hideDown && (n.state === "down" || n.state === "drain")) return false;
-      return true;
-    });
-
-    if (filtered.length === 0) continue;
-
     const headerRow = document.createElement("tr");
     headerRow.className = "gpu-section-header";
     headerRow.id = "section-" + g.gpu_type;
     headerRow.innerHTML = `<td colspan="9">${escHtml(g.gpu_type.toUpperCase())} — ${g.available} / ${g.total} available</td>`;
     tbody.appendChild(headerRow);
 
-    for (const n of filtered) {
+    for (const n of g.nodes) {
       const tr = document.createElement("tr");
       tr.className = "node-row";
       tr.dataset.nodeName = n.name;
@@ -209,10 +237,11 @@ function renderNodeTable(gpuTypes) {
 // --- CPU Rendering ---
 
 function renderCpu(data) {
+  const cpuTypes = filterCpuTypes(data.cpu_types);
   document.getElementById("last-updated").textContent = "Updated: " + data.timestamp;
-  renderCpuSummaryStrip(data.totals);
-  renderCpuTypeCards(data.cpu_types);
-  renderCpuNodeTable(data.cpu_types);
+  renderCpuSummaryStrip(sumGroupTotals(cpuTypes));
+  renderCpuTypeCards(cpuTypes);
+  renderCpuNodeTable(cpuTypes);
 }
 
 function renderCpuSummaryStrip(totals) {
@@ -258,27 +287,14 @@ function renderCpuNodeTable(cpuTypes) {
   const tbody = document.getElementById("cpu-node-table-body");
   tbody.innerHTML = "";
 
-  const search = document.getElementById("search").value.toLowerCase();
-  const accessibleOnly = document.getElementById("filter-accessible").checked;
-  const hideDown = document.getElementById("filter-hide-down").checked;
-
   for (const g of cpuTypes) {
-    const filtered = g.nodes.filter(n => {
-      if (search && !n.name.toLowerCase().includes(search)) return false;
-      if (accessibleOnly && !n.accessible) return false;
-      if (hideDown && (n.state === "down" || n.state === "drain")) return false;
-      return true;
-    });
-
-    if (filtered.length === 0) continue;
-
     const headerRow = document.createElement("tr");
     headerRow.className = "gpu-section-header";
     headerRow.id = "cpu-section-" + g.cpu_type;
     headerRow.innerHTML = `<td colspan="8">${escHtml(g.cpu_type.toUpperCase())} — ${g.available} / ${g.total} cores available</td>`;
     tbody.appendChild(headerRow);
 
-    for (const n of filtered) {
+    for (const n of g.nodes) {
       const tr = document.createElement("tr");
       tr.className = "node-row";
       tr.dataset.nodeName = n.name;
@@ -495,7 +511,148 @@ function buildJobRow(j, groupKey) {
   return tr;
 }
 
+// --- Storage Rendering ---
+
+function renderStorage(data) {
+  // Note: storage does NOT write #last-updated — that clock belongs to the
+  // auto-refreshing tabs. It shows its own timestamp inline instead.
+  const updated = document.getElementById("storage-updated");
+  if (updated) updated.textContent = data.timestamp ? "(as of " + data.timestamp + ")" : "";
+
+  const s = data.summary || {};
+  document.getElementById("storage-stat-mounts").textContent = s.mount_count != null ? s.mount_count : "-";
+  document.getElementById("storage-stat-free").textContent = humanBytes(s.avail_bytes);
+  document.getElementById("storage-stat-mine").textContent = humanBytes(s.user_bytes);
+  document.getElementById("storage-stat-unavailable").textContent = s.unavailable_count != null ? s.unavailable_count : "-";
+
+  const tbody = document.getElementById("storage-table-body");
+  tbody.innerHTML = "";
+
+  // Display order: accessible mounts first, sorted by Free desc, then by the
+  // space I use desc; unavailable/unreadable mounts sink to the bottom.
+  const mounts = (data.mounts || []).slice().sort((a, b) => {
+    if (a.accessible !== b.accessible) return a.accessible ? -1 : 1;
+    const free = (b.avail_bytes || 0) - (a.avail_bytes || 0);
+    if (free !== 0) return free;
+    return (b.user_bytes || 0) - (a.user_bytes || 0);
+  });
+  if (mounts.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="6" class="px-4 py-6 text-center text-gray-500">No storage mounts found.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const m of mounts) {
+    const tr = document.createElement("tr");
+
+    if (!m.accessible) {
+      const nameCell =
+        `<div class="font-mono text-xs">${escHtml(m.key)}</div>` +
+        `<div class="text-xs text-gray-500 truncate max-w-xs" title="${escHtml(m.source || "")}">${escHtml(m.source || "")}</div>`;
+      tr.classList.add("not-accessible");
+      const reason = m.error === "timeout" ? "timeout" : "unavailable";
+      tr.innerHTML =
+        `<td class="px-4 py-2">${nameCell}</td>` +
+        `<td class="px-4 py-2"><span class="badge badge-storage-unavailable">${escHtml(reason)}</span></td>` +
+        `<td class="px-4 py-2 text-right text-gray-400">—</td>` +
+        `<td class="px-4 py-2 text-right text-gray-400">—</td>` +
+        `<td class="px-4 py-2 text-right text-gray-400">—</td>` +
+        `<td class="px-4 py-2 text-right text-gray-400">—</td>`;
+      tbody.appendChild(tr);
+      continue;
+    }
+
+    // Folders I own here, biggest first, skipping any that are 0 B.
+    const folders = (m.user_folders || []).filter(f => f.bytes > 0);
+    const expandable = folders.length > 0;
+    const caret = expandable
+      ? `<span class="storage-caret" aria-hidden="true">▶</span>`
+      : `<span class="storage-caret-spacer" aria-hidden="true"></span>`;
+    const nameCell =
+      `<div class="font-mono text-xs">${caret}${escHtml(m.key)}</div>` +
+      `<div class="text-xs text-gray-500 truncate max-w-xs" title="${escHtml(m.source || "")}">${escHtml(m.source || "")}</div>`;
+
+    tr.innerHTML =
+      `<td class="px-4 py-2">${nameCell}</td>` +
+      `<td class="px-4 py-2">${buildStorageBar(m)}</td>` +
+      `<td class="px-4 py-2 text-right tabular-nums text-blue-600 dark:text-blue-400">${humanBytes(m.user_bytes)}</td>` +
+      `<td class="px-4 py-2 text-right tabular-nums">${humanBytes(m.others_bytes)}</td>` +
+      `<td class="px-4 py-2 text-right tabular-nums text-green-600 dark:text-green-400">${humanBytes(m.avail_bytes)}</td>` +
+      `<td class="px-4 py-2 text-right tabular-nums">${humanBytes(m.total_bytes)}</td>`;
+    tbody.appendChild(tr);
+
+    if (expandable) {
+      tr.classList.add("storage-row");
+      const detail = document.createElement("tr");
+      detail.className = "storage-detail";
+      detail.style.display = "none";
+      detail.innerHTML = `<td colspan="6" class="storage-detail-cell">${buildFolderBreakdown(folders, m)}</td>`;
+      tbody.appendChild(detail);
+      const caretEl = tr.querySelector(".storage-caret");
+      tr.addEventListener("click", () => {
+        const open = detail.style.display !== "none";
+        detail.style.display = open ? "none" : "";
+        if (caretEl) caretEl.textContent = open ? "▶" : "▼";
+      });
+    }
+  }
+}
+
+// Per-mount breakdown of the top-level folders the current user owns, sorted
+// biggest first. Shown when a Storage row is clicked.
+function buildFolderBreakdown(folders, m) {
+  const maxB = folders.reduce((mx, f) => Math.max(mx, f.bytes), 0) || 1;
+  const rows = folders.map(f => {
+    const pct = (f.bytes / maxB * 100).toFixed(1);
+    const full = (m.path ? m.path + "/" : "") + f.name;
+    return `<div class="storage-folder-row">
+      <span class="storage-folder-name font-mono" title="${escHtml(full)}">${escHtml(f.name)}</span>
+      <span class="storage-folder-track"><span class="storage-folder-fill" style="width:${pct}%"></span></span>
+      <span class="storage-folder-size tabular-nums">${humanBytes(f.bytes)}</span>
+    </div>`;
+  }).join("");
+  const n = folders.length;
+  return `<div class="storage-folders">
+    <div class="storage-folders-head">Used by me in <span class="font-mono">${escHtml(m.key)}</span> · ${n} folder${n === 1 ? "" : "s"}</div>
+    ${rows}
+  </div>`;
+}
+
 // --- Helpers ---
+
+function humanBytes(n) {
+  if (n == null || isNaN(n)) return "—";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const val = n / Math.pow(1024, i);
+  return `${val >= 100 ? val.toFixed(0) : val.toFixed(1)} ${units[i]}`;
+}
+
+function buildStorageBar(m) {
+  const t = m.total_bytes || 0;
+  if (t === 0) return '<div class="avail-bar"></div>';
+  // du timed out: we know used vs free from df, but not the me/others split.
+  if (m.user_measured === false) {
+    const pUsed = (m.used_bytes / t * 100).toFixed(1);
+    const pFree = (m.avail_bytes / t * 100).toFixed(1);
+    const title = `used ${humanBytes(m.used_bytes)} · free ${humanBytes(m.avail_bytes)} (your share not measured — du timed out)`;
+    return `<div class="avail-bar" title="${escHtml(title)}">
+      <div class="seg-storage-others" style="width:${pUsed}%"></div>
+      <div class="seg-storage-free" style="width:${pFree}%"></div>
+    </div>`;
+  }
+  const pMe = (m.user_bytes / t * 100).toFixed(1);
+  const pOthers = (m.others_bytes / t * 100).toFixed(1);
+  const pFree = (m.avail_bytes / t * 100).toFixed(1);
+  const title = `me ${humanBytes(m.user_bytes)} · others ${humanBytes(m.others_bytes)} · free ${humanBytes(m.avail_bytes)}`;
+  return `<div class="avail-bar" title="${escHtml(title)}">
+    <div class="seg-storage-me" style="width:${pMe}%"></div>
+    <div class="seg-storage-others" style="width:${pOthers}%"></div>
+    <div class="seg-storage-free" style="width:${pFree}%"></div>
+  </div>`;
+}
 
 function buildBar(avail, alloc, down, total) {
   if (total === 0) return '<div class="avail-bar"></div>';
@@ -612,21 +769,138 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+function saveStoredValue(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    // Ignore storage failures so the dashboard keeps working normally.
+  }
+}
+
+function loadStoredValue(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value == null ? fallback : value;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function loadStoredBoolean(key, fallback) {
+  const value = loadStoredValue(key, null);
+  if (value === null) return fallback;
+  return value === "true";
+}
+
+function isValidTab(tab) {
+  return tab === "gpu" || tab === "cpu" || tab === "jobs" || tab === "storage";
+}
+
+function initializeUiState() {
+  const accessibleCheckbox = document.getElementById("filter-accessible");
+  const hideDownCheckbox = document.getElementById("filter-hide-down");
+
+  accessibleCheckbox.checked = loadStoredBoolean(STORAGE_KEYS.accessibleOnly, accessibleCheckbox.checked);
+  hideDownCheckbox.checked = loadStoredBoolean(STORAGE_KEYS.hideDown, hideDownCheckbox.checked);
+
+  const storedTab = loadStoredValue(STORAGE_KEYS.activeTab, activeTab);
+  switchTab(isValidTab(storedTab) ? storedTab : activeTab, { persist: false, fetchIfNeeded: false });
+}
+
+function getNodeFilters() {
+  return {
+    search: document.getElementById("search").value.toLowerCase(),
+    accessibleOnly: document.getElementById("filter-accessible").checked,
+    hideDown: document.getElementById("filter-hide-down").checked,
+  };
+}
+
+function nodeMatchesFilters(node, filters) {
+  if (filters.search && !node.name.toLowerCase().includes(filters.search)) return false;
+  if (filters.accessibleOnly && !node.accessible) return false;
+  if (filters.hideDown && (node.state === "down" || node.state === "drain")) return false;
+  return true;
+}
+
+function sumGroupTotals(groups) {
+  return groups.reduce((totals, group) => {
+    totals.total += group.total || 0;
+    totals.allocated += group.allocated || 0;
+    totals.available += group.available || 0;
+    totals.down += group.down || 0;
+    return totals;
+  }, { total: 0, allocated: 0, available: 0, down: 0 });
+}
+
+function filterGpuTypes(gpuTypes) {
+  const filters = getNodeFilters();
+  return gpuTypes
+    .map(g => {
+      const nodes = g.nodes.filter(node => nodeMatchesFilters(node, filters));
+      if (nodes.length === 0) return null;
+      return {
+        ...g,
+        total: nodes.reduce((sum, node) => sum + node.gpu_total, 0),
+        allocated: nodes.reduce((sum, node) => sum + node.gpu_allocated, 0),
+        available: nodes.reduce((sum, node) => sum + node.gpu_available, 0),
+        down: nodes.reduce((sum, node) => sum + node.gpu_down, 0),
+        nodes,
+        partitions: [...new Set(nodes.flatMap(node => node.partitions))],
+        accessible: nodes.some(node => node.accessible),
+      };
+    })
+    .filter(Boolean);
+}
+
+function filterCpuTypes(cpuTypes) {
+  const filters = getNodeFilters();
+  return cpuTypes
+    .map(g => {
+      const nodes = g.nodes.filter(node => nodeMatchesFilters(node, filters));
+      if (nodes.length === 0) return null;
+      return {
+        ...g,
+        total: nodes.reduce((sum, node) => sum + node.cpu_total, 0),
+        allocated: nodes.reduce((sum, node) => sum + node.cpu_allocated, 0),
+        available: nodes.reduce((sum, node) => sum + node.cpu_available, 0),
+        down: nodes.reduce((sum, node) => sum + node.cpu_down, 0),
+        mem_total_mb: nodes.reduce((sum, node) => sum + node.mem_total_mb, 0),
+        mem_allocated_mb: nodes.reduce((sum, node) => sum + node.mem_allocated_mb, 0),
+        mem_available_mb: nodes.reduce((sum, node) => sum + node.mem_available_mb, 0),
+        mem_down_mb: nodes.reduce((sum, node) => sum + node.mem_down_mb, 0),
+        nodes,
+        partitions: [...new Set(nodes.flatMap(node => node.partitions))],
+        accessible: nodes.some(node => node.accessible),
+      };
+    })
+    .filter(Boolean);
+}
+
 // --- Filter listeners ---
 
 function reRenderActiveTable() {
   if (activeTab === "gpu" && currentData) {
-    renderNodeTable(currentData.gpu_types);
+    render(currentData);
   } else if (activeTab === "cpu" && currentCpuData) {
-    renderCpuNodeTable(currentCpuData.cpu_types);
+    renderCpu(currentCpuData);
   }
 }
 
 document.getElementById("search").addEventListener("input", reRenderActiveTable);
-document.getElementById("filter-accessible").addEventListener("change", reRenderActiveTable);
-document.getElementById("filter-hide-down").addEventListener("change", reRenderActiveTable);
+document.getElementById("filter-accessible").addEventListener("change", (event) => {
+  saveStoredValue(STORAGE_KEYS.accessibleOnly, String(event.target.checked));
+  reRenderActiveTable();
+});
+document.getElementById("filter-hide-down").addEventListener("change", (event) => {
+  saveStoredValue(STORAGE_KEYS.hideDown, String(event.target.checked));
+  reRenderActiveTable();
+});
 
 // --- Init ---
 
-fetchGpuData();
+initializeUiState();
+fetchData();
+// fetchData() only covers the auto-refreshing tabs; if storage is the restored
+// active tab, lazy-load it once here (preserving the no-auto-refresh behavior).
+if (activeTab === "storage" && !storageLoaded) fetchStorageData();
 startTimer();

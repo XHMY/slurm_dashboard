@@ -24,6 +24,7 @@
     <button class="tab-btn active" onclick="switchTab('gpu')" id="tab-gpu">GPU</button>
     <button class="tab-btn" onclick="switchTab('cpu')" id="tab-cpu">CPU</button>
     <button class="tab-btn" onclick="switchTab('jobs')" id="tab-jobs">My Jobs</button>
+    <button class="tab-btn" onclick="switchTab('storage')" id="tab-storage">Storage</button>
   </div>
 
   <!-- Filters -->
@@ -140,6 +141,49 @@
             </tr>
           </thead>
           <tbody id="jobs-table-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Storage Tab -->
+  <main id="storage-tab" class="px-6 py-6 max-w-7xl mx-auto space-y-8 hidden">
+
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div id="storage-summary-strip" class="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1 min-w-0">
+        <div class="stat-card"><div class="stat-label">Mounts</div><div class="stat-value" id="storage-stat-mounts">-</div></div>
+        <div class="stat-card"><div class="stat-label">Free</div><div class="stat-value text-green-600 dark:text-green-400" id="storage-stat-free">-</div></div>
+        <div class="stat-card"><div class="stat-label">Used by me</div><div class="stat-value text-blue-600 dark:text-blue-400" id="storage-stat-mine">-</div></div>
+        <div class="stat-card"><div class="stat-label">Unavailable</div><div class="stat-value text-red-600 dark:text-red-400" id="storage-stat-unavailable">-</div></div>
+      </div>
+      <button id="storage-refresh-btn" onclick="fetchStorageData(true)" class="px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 transition whitespace-nowrap">Refresh</button>
+    </div>
+
+    <div id="storage-loading" class="hidden px-4 py-3 text-sm text-gray-500 dark:text-gray-400">Loading storage usage… (unreachable mounts may take a few seconds)</div>
+
+    <section>
+      <div class="flex flex-wrap items-center justify-between mb-3 gap-2">
+        <h2 class="text-lg font-semibold">Per-node shared storage <span id="storage-updated" class="text-xs font-normal text-gray-500 dark:text-gray-400"></span></h2>
+        <div class="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+          <span class="flex items-center gap-1"><span class="legend-swatch seg-storage-me"></span> Me</span>
+          <span class="flex items-center gap-1"><span class="legend-swatch seg-storage-others"></span> Others</span>
+          <span class="flex items-center gap-1"><span class="legend-swatch seg-storage-free"></span> Free</span>
+        </div>
+      </div>
+      <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-100 dark:bg-gray-800 text-left">
+            <tr>
+              <th class="px-4 py-2">Mount</th>
+              <th class="px-4 py-2 w-64">Usage (me / others / free)</th>
+              <th class="px-4 py-2 text-right">Used by me</th>
+              <th class="px-4 py-2 text-right">Used by others</th>
+              <th class="px-4 py-2 text-right">Free</th>
+              <th class="px-4 py-2 text-right">Total</th>
+            </tr>
+          </thead>
+          <tbody id="storage-table-body"></tbody>
         </table>
       </div>
     </section>

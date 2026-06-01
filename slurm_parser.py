@@ -5,14 +5,34 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 _cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _cpu_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _user_jobs_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 _accessible_partitions_cache: dict[str, Any] = {"data": None, "timestamp": 0}
+_storage_cache: dict[str, Any] = {"data": None, "timestamp": 0}
 CACHE_TTL = 30  # seconds
 ACCESSIBLE_PARTITIONS_TTL = 300  # partition permissions rarely change
+
+# Shared per-node storage is enumerated by reading an autofs indirect map (the
+# mount is `nobrowse`, so listing the mount point reveals nothing). The defaults
+# below match this cluster — `/etc/auto.hpc` mounted under `/nfs/hpc`, with the
+# non per-node `apps`/`share` keys excluded — but every cluster-specific value is
+# overridable via env var, so the dashboard ports to other autofs-based clusters
+# without editing source. If the map file is absent/unreadable the Storage tab
+# simply shows nothing rather than erroring.
+AUTOFS_MAP = os.environ.get("SLURM_DASHBOARD_AUTOFS_MAP", "/etc/auto.hpc")
+STORAGE_MOUNT_ROOT = os.environ.get("SLURM_DASHBOARD_STORAGE_ROOT", "/nfs/hpc")
+STORAGE_EXCLUDE_KEYS = {
+    k.strip()
+    for k in os.environ.get("SLURM_DASHBOARD_STORAGE_EXCLUDE", "apps,share").split(",")
+    if k.strip()
+}
+STORAGE_PER_CALL_TIMEOUT = 3  # seconds for df/find (metadata only); unreachable mounts hang otherwise
+STORAGE_DU_TIMEOUT = 120  # seconds for du; recurses the user's own subtrees, which can be multi-TB
+STORAGE_MAX_WORKERS = 16
 
 GPU_PRIORITY = [
     "h200", "h100-40g", "h100", "l40s", "a40", "v100",
@@ -599,7 +619,13 @@ def get_cpu_status() -> dict:
 
 _RUNNING_STATES = {"RUNNING", "COMPLETING", "CONFIGURING"}
 _UNSCHEDULED_START = {"", "N/A", "Unknown"}
-_SQUEUE_USER_FMT = "%i|%j|%T|%P|%r|%M|%L|%l|%D|%V|%S|%Q|%b|%C|%m|%f|%R|%N"
+# Use ASCII Unit Separator (\x1f) because %f features can contain literal '|'
+# for OR-constraints (e.g. "epyc|skylake|cascadelake"), which breaks pipe-splitting.
+_USER_FMT_SEP = "\x1f"
+_SQUEUE_USER_FMT = _USER_FMT_SEP.join([
+    "%i", "%j", "%T", "%P", "%r", "%M", "%L", "%l", "%D",
+    "%V", "%S", "%Q", "%b", "%C", "%m", "%f", "%R", "%N",
+])
 
 
 def _run_squeue_user(user: str) -> str:
@@ -627,7 +653,7 @@ def _parse_user_jobs(raw: str) -> list[dict]:
         line = line.rstrip("\n")
         if not line:
             continue
-        parts = line.split("|")
+        parts = line.split(_USER_FMT_SEP)
         if len(parts) < 18:
             continue
         (job_id, name, state, partition, reason, time_used, time_left, time_limit,
@@ -694,6 +720,233 @@ def _empty_user_jobs(user: str, error: Optional[str] = None) -> dict:
     }
     if error:
         data["error"] = error
+    return data
+
+
+def _parse_autofs_mounts() -> list[dict]:
+    """Read the autofs map and return per-node storage mounts to inspect.
+
+    Each map line looks like `<key>  <mount-options>  <host>:<path>`. Lines that
+    are blank or commented out are skipped, as are the non-local `apps`/`share`
+    keys. The on-disk mount path for a key is `/nfs/hpc/<key>`.
+    """
+    try:
+        with open(AUTOFS_MAP) as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+
+    mounts = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = line.split()
+        key = tokens[0]
+        if key in STORAGE_EXCLUDE_KEYS:
+            continue
+        mounts.append({
+            "key": key,
+            "path": f"{STORAGE_MOUNT_ROOT}/{key}",
+            "source": tokens[-1] if len(tokens) > 1 else "",
+        })
+    return mounts
+
+
+def _storage_df(path: str) -> tuple[int, int, int]:
+    """Return (total, used, avail) bytes for a mount. Raises if df fails."""
+    result = subprocess.run(
+        ["df", "-B1", path],
+        capture_output=True, text=True, timeout=STORAGE_PER_CALL_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "df failed")
+    lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
+    # Parse the data row from the right so a long "Filesystem" column that wraps
+    # into the device field cannot shift the numeric columns:
+    #   <fs> <total> <used> <avail> <use%> <mountpoint>
+    tokens = lines[-1].split()
+    total = int(tokens[-5])
+    used = int(tokens[-4])
+    avail = int(tokens[-3])
+    return total, used, avail
+
+
+def _storage_du_user(path: str, user: str):
+    """Bytes used by `user` on a mount, scoped to the top-level dirs they own.
+
+    Rather than recursing the whole mount (which hangs these NFS mounts) or
+    assuming the user's data lives only under a dir named after them, this does
+    a shallow `find -maxdepth 1 -user` of the mount root to discover every
+    top-level entry the user owns, then `du`s just those subtrees. This relies
+    on the cluster convention that a user only writes inside top-level dirs they
+    own and others never write inside theirs, so the owned top-level subtrees
+    account for the user's entire footprint.
+
+    Returns a ``(total, folders)`` tuple:
+      - ``total`` is the byte count, ``0`` when the user owns nothing here / a
+        step fails, or ``None`` when the user *does* own data here but `du`
+        exceeded its time budget (unknown size, reported distinctly from a true
+        0 rather than silently undercounting).
+      - ``folders`` is a per-entry breakdown ``[{"name", "path", "bytes"}, ...]``
+        for each owned top-level entry, sorted by size desc. Empty when total is
+        0 or None (nothing to break down / not measured).
+
+    A failure here must NOT mark the whole mount unreachable — df is the
+    reachability signal.
+    """
+    if not user:
+        return 0, []
+    # Shallow ownership scan of the mount root (metadata only — no recursion).
+    try:
+        listed = subprocess.run(
+            ["find", path, "-maxdepth", "1", "-mindepth", "1", "-user", user, "-print0"],
+            capture_output=True, text=True, timeout=STORAGE_PER_CALL_TIMEOUT,
+        )
+    except Exception:
+        return 0, []
+    if listed.returncode != 0:
+        return 0, []
+    owned = [p for p in listed.stdout.split("\0") if p]
+    if not owned:
+        return 0, []
+    # Size each owned subtree separately; -c appends a grand-total line. The
+    # per-entry lines give us the folder breakdown for free from this one call.
+    try:
+        result = subprocess.run(
+            ["du", "-sbc", *owned],
+            capture_output=True, text=True, timeout=STORAGE_DU_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, []  # owns data here, but it's too large to size within the budget
+    except Exception:
+        return 0, []
+    # du often exits nonzero merely because a subdir is unreadable (permission
+    # denied), yet still prints valid size lines — so parse them regardless of
+    # returncode rather than discarding them. Sizes are a slight lower bound when
+    # unreadable subtrees exist, which beats reporting 0.
+    lines = result.stdout.strip().splitlines()
+    if not lines:
+        return 0, []
+    # Last line is the grand total (from -c); the rest are one per owned entry.
+    folders = []
+    for ln in lines[:-1]:
+        parts = ln.split(None, 1)  # "<bytes>\t<path>" — size is the first token
+        if len(parts) < 2:
+            continue
+        try:
+            nbytes = int(parts[0])
+        except ValueError:
+            continue
+        p = parts[1].strip()
+        folders.append({
+            "name": os.path.basename(p.rstrip("/")) or p,
+            "path": p,
+            "bytes": nbytes,
+        })
+    folders.sort(key=lambda f: f["bytes"], reverse=True)
+    try:
+        total = int(lines[-1].split()[0])
+    except (ValueError, IndexError):
+        total = sum(f["bytes"] for f in folders)
+    return total, folders
+
+
+def _probe_mount(mount: dict, user: str) -> dict:
+    """Inspect a single mount: df for capacity, du for the current user."""
+    record = {
+        "key": mount["key"],
+        "path": mount["path"],
+        "source": mount["source"],
+        "accessible": False,
+        "error": None,
+        "total_bytes": 0,
+        "used_bytes": 0,
+        "avail_bytes": 0,
+        "user_bytes": 0,
+        "others_bytes": 0,
+        "user_measured": True,
+        "user_folders": [],
+    }
+    try:
+        total, used, avail = _storage_df(mount["path"])
+    except subprocess.TimeoutExpired:
+        record["error"] = "timeout"
+        return record
+    except Exception:
+        record["error"] = "unavailable"
+        return record
+
+    user_bytes, user_folders = _storage_du_user(mount["path"], user)
+    record.update({
+        "accessible": True,
+        "total_bytes": total,
+        "used_bytes": used,
+        "avail_bytes": avail,
+    })
+    if user_bytes is None:
+        # df gives total/used/free, but `du` timed out so the me/others split is
+        # unknown — flag it rather than reporting a misleading 0.
+        record.update({"user_bytes": None, "others_bytes": None, "user_measured": False})
+    else:
+        record.update({
+            "user_bytes": user_bytes,
+            "others_bytes": max(0, used - user_bytes),
+            "user_folders": user_folders,
+        })
+    return record
+
+
+def get_storage_status(force: bool = False) -> dict:
+    """Per-node shared-storage usage: free space, used by me, used by others.
+
+    Lazy/manual feature in the UI. The 30s TTL still helps as a debounce when the
+    user clicks away and back; the Refresh button passes force=True to recompute.
+    Per-mount df+du run concurrently with a short per-call timeout so a few
+    unreachable mounts don't stall the whole request.
+    """
+    now = time.time()
+    if (
+        not force
+        and _storage_cache["data"]
+        and (now - _storage_cache["timestamp"]) < CACHE_TTL
+    ):
+        return _storage_cache["data"]
+
+    user = os.environ.get("USER", "")
+    mounts = _parse_autofs_mounts()
+
+    records: list[dict] = []
+    try:
+        with ThreadPoolExecutor(max_workers=min(STORAGE_MAX_WORKERS, len(mounts) or 1)) as ex:
+            futures = [ex.submit(_probe_mount, m, user) for m in mounts]
+            records = [f.result() for f in as_completed(futures)]
+    except Exception:
+        records = []
+    records.sort(key=lambda r: r["key"])
+
+    accessible = [r for r in records if r["accessible"]]
+    measured = [r for r in accessible if r.get("user_measured")]
+    summary = {
+        "mount_count": len(records),
+        "accessible_count": len(accessible),
+        "unavailable_count": len(records) - len(accessible),
+        "unmeasured_count": len(accessible) - len(measured),
+        "total_bytes": sum(r["total_bytes"] for r in accessible),
+        "used_bytes": sum(r["used_bytes"] for r in accessible),
+        "avail_bytes": sum(r["avail_bytes"] for r in accessible),
+        "user_bytes": sum(r["user_bytes"] for r in measured),
+        "others_bytes": sum(r["others_bytes"] for r in measured),
+    }
+
+    data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "user": user,
+        "summary": summary,
+        "mounts": records,
+    }
+    _storage_cache["data"] = data
+    _storage_cache["timestamp"] = now
     return data
 
 
